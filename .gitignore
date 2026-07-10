@@ -1,0 +1,13 @@
+/safetensors/
+/output/
+*.safetensors
+*.gguf
+/.venv/
+venv/
+__pycache__/
+*.pyc
+/.cache/
+*.log
+.pytest_cache/
+
+!typemap/*.json

@@ -1,0 +1,13 @@
+[source]
+repo_id = "SulphurAI/Sulphur-2-base"
+filename = "sulphur_distil_bf16.safetensors"
+expected_size = 46139885414
+local_dir = "safetensors"
+
+[reference]
+gguf_path = 'S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models\ltx-2.3-gguf\LTX-2.3-distilled-1.1\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf'
+typemap_path = "typemap/ltx23_q4km_typemap.json"
+
+[output]
+dir = "output"
+filename = "Sulphur-2-base-distil-Q4_K_M.gguf"

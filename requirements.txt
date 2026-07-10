@@ -1,0 +1,6 @@
+gguf==0.18.0
+numpy==2.4.2
+safetensors==0.7.0
+huggingface_hub==0.36.2
+tqdm
+pytest
