@@ -47,3 +47,27 @@ src/converter/ 変換ツール本体のPythonパッケージ
 tests/         テストコード
 Docs/          設計メモ等のドキュメント
 ```
+
+## 変換したGGUFの配置と選択
+
+`run.bat convert` の出力（`output\*.gguf`）は、このツールのフォルダに置いてあるだけでは
+バックエンド（Nz-LTX23-backend）から認識されません。バックエンドに反映するには以下の
+手順を行ってください。
+
+1. `output\*.gguf` を、バックエンドの `Nz-LTX23-backend\models\ltx-2.3-gguf\` 配下に
+   **新しいサブフォルダを作って**コピーします。既存の `LTX-2.3-distilled-1.1\`
+   フォルダとは兄弟の関係になるようにし、既存の参照GGUFは上書きしないでください
+   （例: `models\ltx-2.3-gguf\Sulphur-2-base-distil-1.0\Sulphur-2-base-distil-Q4_K_M.gguf`）。
+2. バックエンドは `models\ltx-2.3-gguf\` 配下を**再帰的に**スキャンして`.gguf`ファイルを
+   自動登録する設計になっているため、コピーするだけで反映されます。登録名はファイル名
+   （拡張子を除いた部分）がそのまま使われ、`config.yaml`の編集は不要です。
+3. バックエンドを起動（または再起動）した状態で、UIの「Models」設定、またはAPI
+   `POST /pipeline/load` でこの登録名を選べば、そのGGUFが読み込まれます。
+
+このツールで取得した蒸留LoRA（`safetensors\distill_loras\` 配下）も、同様に
+`Nz-LTX23-backend\models\loras\` へコピーするだけでバックエンドが自動認識します。
+生成時はAPIの `loras:[{name, strength}]`、またはGradio UIのプロンプト内
+`<lora:名前:強度>` という記法で指定します（こちらも設定ファイルの編集は不要です）。
+
+実際に配置・選択して動画生成まで確認した手順とログは、`Docs/VERIFICATION.md`の
+「5. E2E段階B」を参照してください。

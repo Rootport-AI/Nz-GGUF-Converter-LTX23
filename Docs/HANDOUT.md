@@ -50,6 +50,29 @@ run.bat verify             生成したGGUFの構造が参照GGUFと一致する
 約2時間34分でした。出力ファイルサイズは17,763,014,976バイトで、参照GGUF
 （17,763,015,328バイト）とほぼ同一（差0.002%）です。
 
+### 1-4. 変換したGGUFとLoRAの配置と選択
+
+出力GGUF（`output\*.gguf`）は、このプロジェクトのフォルダに置いてあるだけではバック
+エンド（Nz-LTX23-backend）から見えません。バックエンドで使うには次の手順が必要です。
+
+1. `output\*.gguf`を、バックエンドの`Nz-LTX23-backend\models\ltx-2.3-gguf\`配下に
+   **新しいサブフォルダを作って**コピーします（既存の`LTX-2.3-distilled-1.1\`と
+   兄弟フォルダにし、既存の参照GGUFは上書きしないでください）。例:
+   `models\ltx-2.3-gguf\Sulphur-2-base-distil-1.0\Sulphur-2-base-distil-Q4_K_M.gguf`。
+2. バックエンドは`models\ltx-2.3-gguf\`配下を**再帰的に**スキャンして`.gguf`ファイルを
+   自動登録します（登録名＝ファイル名から拡張子を除いたもの）。コピーするだけで
+   反映され、`config.yaml`の編集は不要です。
+3. バックエンド起動後、UIの「Models」設定またはAPI `POST /pipeline/load`でこの
+   登録名を選べば読み込まれます。
+
+`safetensors\distill_loras\`に取得した蒸留LoRAも、`Nz-LTX23-backend\models\loras\`へ
+コピーするだけで自動認識されます。生成時はAPIの`loras:[{name, strength}]`、または
+Gradio UIのプロンプト内`<lora:名前:強度>`記法で指定します（同じく設定ファイルの編集は
+不要）。
+
+実際の手順とログは`Docs/VERIFICATION.md`の「5. E2E段階B」を参照してください
+（GPU実生成スモークまで実施済みです）。
+
 ## 2. 43GBのsafetensorsを消してよいタイミング
 
 `safetensors\sulphur_distil_bf16.safetensors`（約43GB）は、以下がすべて済んだ
