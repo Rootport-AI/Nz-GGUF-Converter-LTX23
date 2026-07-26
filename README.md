@@ -71,3 +71,12 @@ Docs/          設計メモ等のドキュメント
 
 実際に配置・選択して動画生成まで確認した手順とログは、`Docs/VERIFICATION.md`の
 「5. E2E段階B」を参照してください。
+
+## 変換実績
+
+このツールを使って、Sulphur 2 baseと10Erosの2本のモデルをGGUFに変換し、
+どちらも実機で動画生成まで確認済みです。
+
+- Sulphur 2 base: 変換したGGUFは `https://huggingface.co/Rootport/Nz-Sulphur2` から
+  ダウンロードできます。
+- 10Eros: 変換に成功しています。
