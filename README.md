@@ -83,5 +83,4 @@ Docs/          設計メモ等のドキュメント
 
 - Sulphur 2 base: 変換したGGUFは `https://huggingface.co/Rootport/Nz-Sulphur2` から
   ダウンロードできます。
-- 10Eros: 変換に成功しています。**配布については別途検討中のため、HuggingFaceへのアップロードは
-  行わないでください**（Sulphurと同じ手順が使える状態ですが、公開の可否はオーナーの判断待ちです）。
+- 10Eros: 変換に成功しています。
