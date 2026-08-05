@@ -1,6 +1,9 @@
 # Nz-GGUF-Converter-LTX23
 
-LTX 2.3のファインチューンモデル「Sulphur 2 base」のsafetensors（PyTorchの重みファイル形式、約43GB）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）形式に変換する独立ツールです。
+このリポジトリは、Nz-LTX23（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
+
+1. **GGUF変換**（このツールの出発点）— LTX 2.3のファインチューンモデル「Sulphur 2 base」のsafetensors（PyTorchの重みファイル形式、約43GB）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）形式に変換します。
+2. **PrunaVAED変換**（`convert-vae`）— 枝刈り（pruning。寄与の小さいチャンネルを削ること）を施した映像VAEデコーダ「PrunaVAED」の配布ファイルから、デコーダ部分だけを取り出して約690MBのsafetensorsに作り直します。バックエンドがそのまま読み込める形（キー名の付け替え済み）で出力します。
 
 変換後のGGUFは、既存のバックエンド（Nz-LTX23-backend）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じ構造・型マップに揃えることで、バックエンド側の推論コードを変更せずに差し替えられるようにします。
 
@@ -22,9 +25,33 @@ run.bat download          元のsafetensorsファイルをHugging Face Hubから
 run.bat extract-typemap   参照GGUF（config.tomlのreference.gguf_path）からテンソルの型・形状の対応表（typemap）を抽出する
 run.bat convert           safetensorsを読み込み、typemapに従ってQ4_K_M GGUFへ変換する
 run.bat verify            生成したGGUFの構造・テンソル形状が参照GGUFと一致するか検証する
+run.bat all               上の4つ（download → extract-typemap → convert → verify）を順に実行する。
+                          途中で失敗したらそこで止まる。typemapが既にある場合はextract-typemapを飛ばす
+                          （--force-typemapを付けると飛ばさずに作り直す）
+run.bat convert-vae       PrunaVAED（枝刈り版の映像VAE）をダウンロードし、デコーダ部だけを
+                          取り出した約690MBのsafetensorsを作る（下記「PrunaVAEDの変換」参照）
 ```
 
 設定は `config.toml` にまとめてあります（ダウンロード元のrepo_id、参照GGUFのパス、出力先など）。
+
+## PrunaVAEDの変換（`run.bat convert-vae`）
+
+PrunaVAEDは、Pruna AIが公開しているLTX-2.3専用の映像VAEデコーダです。VAE（Variational Autoencoder。潜在表現と実際の映像を相互に変換する部分）のうち「潜在表現から映像を復元する側」だけを軽くしたもので、バックエンドの設定画面から任意で選べるようにするために変換します。
+
+```
+run.bat convert-vae
+```
+
+このコマンドは次を一気に行います。
+
+1. Hugging Faceの `PrunaAI/PrunaVAED` から、**コミットハッシュで固定した版**の重みファイル（約1.33GB）を取得します。取得後にファイルのSHA-256（内容から計算される指紋のような値）を照合し、少しでも違えばそこで停止します。v1とv2はファイルの構造が同一で中身の値だけが違うため、サイズだけでは取り違えを防げないからです。
+2. 1.33GBのうち**デコーダ部分の100本のテンソルだけ**を抜き出し、バックエンドがそのまま読み込めるキー名へ付け替えます。エンコーダ部分は元のモデルと完全に同一なので配布しません。
+3. 潜在表現の統計量（`latents_mean` / `latents_std`）を2本加えて、合計102本・約690MBのsafetensorsとして書き出します。**値は1ビットも変換していません**（BF16のまま生バイトをコピーしています）。
+4. 書き出したファイルを自分で読み直し、8項目の自己検証を行います。テンソル本数・キー名の集合・形状・パラメータ総数に加えて、**全テンソルについて元ファイルの該当領域とMD5を突き合わせ**ます。本数や形状だけの検査では「同じ形のテンソルどうしの取り違え」を見逃すためです。1項目でも失敗すれば異常終了し、そのファイルは使いません。
+
+出力は `output\PrunaVAED-decoder-bf16.safetensors` です。ファイル名に `video` という文字列が入っていないのは意図的で、バックエンドが `video` を含むファイルを「差し替え可能な映像VAE本体」として自動登録してしまうためです（デコーダ単体を本体として選ばれると壊れます）。
+
+実行結果の全文は `Docs/VERIFICATION.md` の「7. PrunaVAEDデコーダ変換の検証記録」を参照してください。
 
 ## GPU排他ルール（重要）
 
@@ -33,17 +60,27 @@ run.bat verify            生成したGGUFの構造・テンソル形状が参�
 
 ## ディスク使用量の目安
 
+GGUF変換の場合:
+
 - ダウンロードする元のsafetensors（Sulphur 2 base, bf16）: 約43GB
 - 変換後の出力GGUF（Q4_K_M）: 約16.5GB
 - 合計で60GB程度の空き容量を確保してから作業を始めてください。
+
+PrunaVAED変換（`convert-vae`）の場合:
+
+- ダウンロードする元のsafetensors（PrunaVAED v2, bf16）: 約1.33GB
+- 変換後の出力safetensors: 約690MB
+- 合計で2GB程度あれば足ります。
 
 ## ディレクトリ構成
 
 ```
 safetensors/   ダウンロードした元のsafetensorsを置く場所（.gitignore対象）
-output/        変換後のGGUFの出力先（.gitignore対象）
+output/        変換後のGGUF・safetensorsの出力先（.gitignore対象）
 typemap/       参照GGUFから抽出した型マップJSON（コミット対象）
 src/converter/ 変換ツール本体のPythonパッケージ
+src/converter/data/
+               変換後ファイルに埋め込むライセンス全文（コミット対象）
 tests/         テストコード
 Docs/          設計メモ等のドキュメント
 ```

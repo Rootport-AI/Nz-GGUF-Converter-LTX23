@@ -118,6 +118,21 @@ class _SafetensorsRaw:
     def dtype_of(self, name: str) -> str:
         return self._header[name]["dtype"]
 
+    def shape_of(self, name: str) -> list[int]:
+        """Return the tensor's logical shape as recorded in the header."""
+        return list(self._header[name]["shape"])
+
+    def region_of(self, name: str) -> tuple[int, int]:
+        """Return the tensor's ``(start, end)`` byte offsets *within the file*.
+
+        The header's ``data_offsets`` are relative to the start of the payload;
+        this adds the payload base so the result can be fed straight to
+        ``seek``/``read`` on an independently opened handle (used by
+        :mod:`converter.convert_vae` for its byte-level passthrough proof).
+        """
+        start, end = self._header[name]["data_offsets"]
+        return self._base + start, self._base + end
+
     # -- payload access --------------------------------------------------
     def _read_raw(self, name: str) -> bytes:
         entry = self._header[name]

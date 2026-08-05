@@ -1,7 +1,9 @@
-"""Command-line interface for the Sulphur-2 (LTX-2.3 fine-tune) -> GGUF pipeline.
+"""Command-line interface for the Nz-LTX23 weight-conversion toolbox.
 
-Wires together the four pipeline stages -- each implemented in its own module
-and unchanged here -- into a single ``converter`` CLI with subcommands:
+Wires together the pipeline stages -- each implemented in its own module and
+unchanged here -- into a single ``converter`` CLI with subcommands.
+
+The Sulphur-2 (LTX-2.3 fine-tune) -> GGUF pipeline:
 
 * ``download``        -- :mod:`converter.download`  (fetch the source safetensors)
 * ``extract-typemap``  -- :mod:`converter.typemap`   (derive the quantization typemap
@@ -11,6 +13,12 @@ and unchanged here -- into a single ``converter`` CLI with subcommands:
 * ``all``              -- runs the four steps above in order, stopping at the first
   failure. ``extract-typemap`` is skipped if its output already exists, unless
   ``--force-typemap`` is given.
+
+Standalone conversions:
+
+* ``convert-vae``     -- :mod:`converter.convert_vae` (PrunaVAED pruned video VAE
+  -> decoder-only safetensors, downloading the pinned upstream revision first if
+  it is not already present)
 
 Every subcommand falls back to ``config.toml`` for its default paths/values and
 accepts CLI options to override them (see ``--help`` on each subcommand).
@@ -33,6 +41,7 @@ from pathlib import Path
 from typing import Any
 
 from . import convert as convert_mod
+from . import convert_vae as convert_vae_mod
 from . import download as download_mod
 from . import typemap as typemap_mod
 from . import verify as verify_mod
@@ -67,12 +76,18 @@ def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
     expected_size = getattr(args, "expected_size", None)
     if expected_size is None:
         expected_size = source["expected_size"]
+    revision = getattr(args, "revision", None) or source.get("revision")
+    sha256 = getattr(args, "sha256", None) or source.get("sha256")
 
     print(f"Repo    : {repo_id}")
     print(f"Filename: {filename}")
     print(f"Dest dir: {local_dir}")
+    if revision:
+        print(f"Revision: {revision}")
+    if sha256:
+        print(f"SHA-256 : {sha256}")
 
-    path = download_mod.download(repo_id, filename, local_dir, expected_size)
+    path = download_mod.download(repo_id, filename, local_dir, expected_size, revision, sha256)
     print(f"Download complete: {path}")
     return 0
 
@@ -156,6 +171,76 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_convert_vae(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    pv = config["prunavaed"]
+    repo_id = getattr(args, "repo_id", None) or pv["repo_id"]
+    revision = getattr(args, "revision", None) or pv["revision"]
+    filename = getattr(args, "filename", None) or pv["filename"]
+    expected_size = getattr(args, "expected_size", None)
+    if expected_size is None:
+        expected_size = pv["expected_size"]
+    sha256 = getattr(args, "sha256", None) or pv["sha256"]
+    local_dir = _resolve_path(getattr(args, "local_dir", None), _PROJECT_ROOT / pv["local_dir"])
+
+    default_out_path = _PROJECT_ROOT / pv["out_dir"] / pv["out_filename"]
+    out_path = _resolve_path(getattr(args, "out", None), default_out_path)
+
+    reference_expected = getattr(args, "reference_expected", True)
+    if reference_expected is None:
+        reference_expected = True
+
+    reference_vae = getattr(args, "reference_vae", None) or pv.get("reference_vae_path")
+    reference_vae_path = Path(reference_vae) if reference_vae else None
+
+    st_override = getattr(args, "st_path", None)
+    src_path = Path(st_override) if st_override else local_dir / filename
+    # An explicit --st-path means "use this file", so nothing is fetched.
+    do_download = st_override is None and getattr(args, "download", True)
+
+    print(f"Repo    : {repo_id}")
+    print(f"Revision: {revision}")
+    print(f"Filename: {filename}")
+    print(f"Source  : {src_path}")
+    print(f"Output  : {out_path}")
+    if reference_vae_path is not None:
+        print(f"Ref. VAE: {reference_vae_path}"
+              f"{'' if reference_vae_path.is_file() else '  (absent -- item 6 will be skipped)'}")
+
+    # Fetch on demand: the pinned revision and digest make this idempotent, and
+    # an already-present file only costs one SHA-256 pass.
+    if do_download:
+        src_path = download_mod.download(
+            repo_id, filename, local_dir, expected_size, revision, sha256
+        )
+    elif not src_path.is_file():
+        print(f"Source safetensors not found: {src_path}", file=sys.stderr)
+        return 1
+
+    if out_path.exists():
+        print(f"WARNING: output already exists and will be overwritten: {out_path}")
+
+    try:
+        report = convert_vae_mod.convert_vae(
+            src_path,
+            out_path,
+            source_repo=repo_id,
+            source_revision=revision,
+            source_filename=filename,
+            expected_sha256=sha256,
+            reference_expected=reference_expected,
+            reference_vae_path=reference_vae_path,
+        )
+    except convert_vae_mod.VaeConversionError as exc:
+        # Expected/handled failure: a short message, no traceback (see the
+        # module docstring's exit-code contract).
+        print(f"convert-vae failed: {exc}", file=sys.stderr)
+        return 1
+
+    print()
+    print(report.summary())
+    return 0 if report.passed else 1
+
+
 def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
     out_cfg = config["output"]
     default_out_path = _PROJECT_ROOT / out_cfg["dir"] / out_cfg["filename"]
@@ -222,9 +307,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="converter",
         description=(
-            "Sulphur-2 (LTX-2.3 fine-tune) safetensors -> GGUF (Q4_K_M) conversion pipeline. "
-            "All subcommands fall back to config.toml for their default paths; "
-            "pass options to override them. Run via: run.bat <command> [options]"
+            "Nz-LTX23 weight-conversion toolbox: the Sulphur-2 (LTX-2.3 fine-tune) "
+            "safetensors -> GGUF (Q4_K_M) pipeline, plus the standalone PrunaVAED "
+            "video-VAE decoder conversion. All subcommands fall back to config.toml "
+            "for their default paths; pass options to override them. "
+            "Run via: run.bat <command> [options]"
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
@@ -253,6 +340,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--expected-size",
         type=int,
         help="Expected file size in bytes (default: config.toml [source].expected_size)",
+    )
+    p_download.add_argument(
+        "--revision",
+        help=(
+            "Git revision (commit hash/branch/tag) to pin the download to "
+            "(default: config.toml [source].revision if present, else the repo's "
+            "default branch)"
+        ),
+    )
+    p_download.add_argument(
+        "--sha256",
+        help=(
+            "Pinned SHA-256 of the file's content; verified after download "
+            "(default: config.toml [source].sha256 if present, else no check)"
+        ),
     )
     p_download.set_defaults(handler=cmd_download)
 
@@ -323,6 +425,80 @@ def build_parser() -> argparse.ArgumentParser:
         "--reference", help="Path to the reference GGUF (default: config.toml [reference].gguf_path)"
     )
     p_verify.set_defaults(handler=cmd_verify)
+
+    # -- convert-vae ---------------------------------------------------------
+    p_convert_vae = subparsers.add_parser(
+        "convert-vae",
+        help="Convert the PrunaVAED checkpoint into a decoder-only safetensors file.",
+        description=(
+            "Download (pinned revision + SHA-256) the upstream PrunaVAED "
+            "diffusers-format VAE, extract just the decoder, rename its keys to "
+            "the backend's flat ltx-core layout and write a ~690 MB BF16 "
+            "safetensors file. Tensor bytes are copied verbatim -- no dtype "
+            "conversion, no requantization. The command self-verifies what it "
+            "wrote (tensor count, key set, shapes, parameter total, an "
+            "exhaustive per-tensor MD5 passthrough proof, the latent "
+            "statistics, a header round-trip and the total size) and exits "
+            "non-zero if any item fails."
+        ),
+    )
+    p_convert_vae.add_argument(
+        "--repo-id", help="Hugging Face Hub repo id (default: config.toml [prunavaed].repo_id)"
+    )
+    p_convert_vae.add_argument(
+        "--revision", help="Pinned git revision (default: config.toml [prunavaed].revision)"
+    )
+    p_convert_vae.add_argument(
+        "--filename", help="File name within the repo (default: config.toml [prunavaed].filename)"
+    )
+    p_convert_vae.add_argument(
+        "--expected-size",
+        type=int,
+        help="Expected source size in bytes (default: config.toml [prunavaed].expected_size)",
+    )
+    p_convert_vae.add_argument(
+        "--sha256", help="Pinned source SHA-256 (default: config.toml [prunavaed].sha256)"
+    )
+    p_convert_vae.add_argument(
+        "--local-dir",
+        help="Download destination directory (default: config.toml [prunavaed].local_dir)",
+    )
+    p_convert_vae.add_argument(
+        "--st-path",
+        help=(
+            "Use this source safetensors file as-is and skip the download "
+            "(default: <local-dir>/<filename>)"
+        ),
+    )
+    p_convert_vae.add_argument(
+        "--out",
+        help="Output safetensors path (default: config.toml [prunavaed] out_dir/out_filename)",
+    )
+    p_convert_vae.add_argument(
+        "--reference-vae",
+        help=(
+            "Stock LTX23_video_vae_bf16.safetensors, used only to cross-check the "
+            "latent statistics (default: config.toml [prunavaed].reference_vae_path; "
+            "the check is skipped when the file is absent)"
+        ),
+    )
+    p_convert_vae.add_argument(
+        "--download",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Fetch the source from the Hub if needed (default: true)",
+    )
+    p_convert_vae.add_argument(
+        "--reference-expected",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Check the shape table, the 345,006,256 parameter total and the "
+            "690,012,512-byte payload against the real PrunaVAED v2 model "
+            "(default: true; use --no-reference-expected for a synthetic fixture)"
+        ),
+    )
+    p_convert_vae.set_defaults(handler=cmd_convert_vae)
 
     # -- all -------------------------------------------------------------
     p_all = subparsers.add_parser(

@@ -1,7 +1,10 @@
 # 検証記録（VERIFICATION）
 
-このドキュメントは、Sulphur-2-base → GGUF（Q4_K_M）変換の実行結果と検証結果を
-まとめた記録です。対象ファイル:
+このドキュメントは、本リポジトリの変換ツールで実際に行った変換の実行結果と検証
+結果をまとめた記録です。1〜5節がSulphur-2-base、6節が10Eros v1.2（いずれもGGUF
+変換）、7節がPrunaVAEDデコーダ変換の記録です。
+
+以下1〜5節は、Sulphur-2-base → GGUF（Q4_K_M）変換についての記録です。対象ファイル:
 
 - 出力GGUF: `output\Sulphur-2-base-distil-Q4_K_M.gguf`
   （サイズ 17,763,014,976 バイト = 約17.76GB、テンソル4444個）
@@ -369,3 +372,227 @@ RESULT: PASS
 **結論: 10Eros v1.2版についても、構造検証（10項目）・E2E段階A（KVメタデータ
 取得＋4444テンソル全件のCPU dequant）の両方が、Sulphur-2-base-distil版と同じく
 一発でPASSしました。GPUは一切使用していません。**
+
+---
+
+## 7. PrunaVAEDデコーダ変換の検証記録（2026-08-05）
+
+`convert-vae` サブコマンド（新設）で、枝刈り版の映像VAEデコーダ「PrunaVAED v2」を
+バックエンドがそのまま読み込める形へ変換しました。仕様の正本はバックエンド側の
+`Docs/PRUNAVAED_WORKORDER.md` で、本節はその §9 の**ゲートG1（変換ツールの機械
+検証）**の記録です。設計判断の説明は `Docs/DESIGN.md` の6節にあります。
+
+対象ファイル:
+
+- 変換元: `safetensors\prunavaed\vae\diffusion_pytorch_model.safetensors`
+  （サイズ 1,327,909,418 バイト = 約1.33GB、bf16、diffusers形式）
+  - 取得元: Hugging Face `PrunaAI/PrunaVAED`
+  - revision（コミットハッシュ）: `4baacd7ef66a6131439542c1f05872afe042e128`
+  - SHA-256: `4cbf0cbe6c185514d62c6c58c35dc42d7ea15924f34391e08be12f44bfccdf1d`
+- 出力: `output\PrunaVAED-decoder-bf16.safetensors`
+  （サイズ **690,047,968 バイト** = 約690MB、テンソル **102本**）
+  - SHA-256: `48453517849dd8c0de0d56177d8643c9fb783228d2c7ffc4286a20dfaf7dde40`
+  - 内訳: 8 バイト（ヘッダー長）＋ ヘッダー 34,936 バイト ＋ 本体 690,013,024 バイト
+  - 本体の内訳: デコーダ100本 690,012,512 バイト ＋ 統計量2本 512 バイト
+  - パラメータ総数: **345,006,256**（統計量を除く。ワークオーダー §2.3 が事前に
+    積算した値と1個の違いも無く一致）
+- 照合に使った既存ファイル（自己検証の項目6）:
+  `Nz-LTX23-backend\models\ltx-2.3-components\vae\LTX23_video_vae_bf16.safetensors`
+
+変換の実行時刻（出力ファイルのタイムスタンプより）: 2026-08-05 11:46:36。
+ダウンロード（約1.33GB）を含めて約5分、変換処理そのものは十数秒でした。
+
+### 7-1. pytest全結果
+
+実行コマンド: `PYTHONPATH=src .venv\Scripts\python.exe -m pytest tests/ -v`
+
+```
+======================= 75 passed, 14 skipped in 29.08s =======================
+```
+
+内訳（新設した `tests/test_convert_vae.py` は18件すべてPASS）:
+
+| ファイル | 件数 |
+|---|---|
+| tests/test_convert.py | 8 |
+| tests/test_convert_vae.py | **18（新設）** |
+| tests/test_metadata.py | 9 |
+| tests/test_output_vs_reference.py | 15 |
+| tests/test_quant_roundtrip.py | 24 |
+| tests/test_typemap.py | 13 |
+
+本テーマ着手前の総数は 71件（57 passed / 14 skipped）でした。18件増えて 89件
+（75 passed / 14 skipped）になり、**既存テストの退行はゼロ**です。skipped の14件は
+すべて従来どおりで、参照GGUF（約17.8GB）が手元にある場合だけ意味を持つテストです。
+
+新設テストが押さえている内容:
+
+- キー対応表が、ワークオーダー §4.1 の表を**手で書き写した102行の対照表**と
+  完全一致すること（表を生成したのと同じ方法で期待値を作っては検証にならないため、
+  対照表は独立に手書きしています）。実際にこのテストが、実装時のキー名の誤り
+  （アップサンプラの階層を1段浅く書いていた）を捕まえました。
+- 縮小版（各チャンネル幅を1/64にした合成モデル。射影resnet・アップサンプラ・
+  統計量という構造上の特徴はそのまま）を使った変換の通し。キー名は幅に依存しない
+  ので、**実物とまったく同じ102本のキー**が出ることまで検証できます。
+- 同じ形状のテンソルを入れ替えたら、MD5の突き合わせが確実に捕まえること。
+  併せて「本数・キー集合・ファイルサイズの各検査はこの誤りを見逃す」ことも
+  同時に確認しています（見逃すからこそ全件突き合わせが要る、という主張の裏づけ）。
+- 同じ元テンソルを2箇所へ書く対応表（単射でない対応表）を捕まえること。
+- テンソルの欠落・想定外のテンソルの混入で、それぞれ専用の例外が上がること。
+- `__metadata__` の `config` に `decoder_blocks` が**入っていない**こと。
+- 同じ入力から2回変換すると、バイト単位で同一のファイルができること。
+
+### 7-2. 実ファイルに対する `convert-vae` の実行（全文）
+
+実行コマンド:
+
+```
+PYTHONPATH=src .venv\Scripts\python.exe -m converter convert-vae
+```
+
+（引数なし。すべて `config.toml` の `[prunavaed]` セクションの既定値で実行。
+ダウンロードもこのコマンドが行います。）
+
+出力全文（進捗バーの行だけ、同じ行の書き換えが繰り返されるため最終状態のみに省略）:
+
+```
+Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed.
+Falling back to regular HTTP download. For better performance, install the package
+with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+Repo    : PrunaAI/PrunaVAED
+Revision: 4baacd7ef66a6131439542c1f05872afe042e128
+Filename: vae/diffusion_pytorch_model.safetensors
+Source  : S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\safetensors\prunavaed\vae\diffusion_pytorch_model.safetensors
+Output  : S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\output\PrunaVAED-decoder-bf16.safetensors
+Ref. VAE: S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models\ltx-2.3-components\vae\LTX23_video_vae_bf16.safetensors
+(ダウンロード進捗バー ... 1.33G/1.33G)
+Verifying SHA-256 of the downloaded file...
+SHA-256 OK: 4cbf0cbe6c185514d62c6c58c35dc42d7ea15924f34391e08be12f44bfccdf1d
+Verifying the source SHA-256 (pinned revision 4baacd7ef66a6131439542c1f05872afe042e128)...
+Source SHA-256 OK: 4cbf0cbe6c185514d62c6c58c35dc42d7ea15924f34391e08be12f44bfccdf1d
+Writing 102 tensors to S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\output\PrunaVAED-decoder-bf16.safetensors
+writing tensors: 100%|##########| 102/102 [00:00<00:00, 295.83tensor/s]
+md5 cross-check: 100%|##########| 102/102 [00:01<00:00, 57.98tensor/s]
+
+Source : S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\safetensors\prunavaed\vae\diffusion_pytorch_model.safetensors
+Output : S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\output\PrunaVAED-decoder-bf16.safetensors
+SHA-256 (source): 4cbf0cbe6c185514d62c6c58c35dc42d7ea15924f34391e08be12f44bfccdf1d
+Tensors: 102
+Params : 345,006,256 (per_channel_statistics excluded)
+Bytes  : header=34936 payload=690013024 file=690047968
+
+[PASS] 1_tensor_count
+[PASS] 2_key_set
+[PASS] 3_tensor_shapes
+[PASS] 4_parameter_total
+[PASS] 5_md5_passthrough
+[PASS] 6_latent_statistics_vs_reference
+[PASS] 7_output_header_roundtrip
+[PASS] 8_total_size
+
+RESULT: PASS
+```
+
+終了コード: `0`
+
+**結果: 自己検証8項目すべてPASS。失敗項目・スキップ項目ともにゼロ。**
+今回は照合用の既存ファイル（`LTX23_video_vae_bf16.safetensors`）が手元にあったため、
+任意項目である6番も実際に実行されてPASSしています。
+
+各項目の意味:
+
+1. `1_tensor_count` — テンソル本数が102本であること（デコーダ100本＋統計量2本）。
+2. `2_key_set` — 出力したキー名の集合が、ワークオーダー §4.1 の表から機械的に
+   生成した期待集合と**過不足なく完全一致**すること。並び順まで一致します。
+3. `3_tensor_shapes` — 全102本の形状が、事前に確定した形状表と一致すること。
+4. `4_parameter_total` — パラメータ総数が 345,006,256 であること（統計量を除く）。
+5. `5_md5_passthrough` — (a) 対応表が単射であること（同じ元テンソルを2箇所へ
+   書いていないこと）と、(b) **全102本**について「出力ファイル上のバイト範囲」と
+   「元ファイル上の該当バイト範囲」のMD5が一致すること。標本抽出ではなく全件です。
+   理由は、項目1〜4・6〜8がすべて「集合」と「形」しか見ておらず、**同じ形状の
+   テンソルどうしの取り違えを全項目が素通しする**ためです（たとえば `up_blocks.5` の
+   `conv1` と `conv2` はどちらも `[384,384,3,3,3]` で、入れ替えても本数・形状・
+   パラメータ総数・ファイルサイズは1バイトも変わりません）。
+6. `6_latent_statistics_vs_reference` — `per_channel_statistics.mean-of-means` と
+   `std-of-means` が、既存の `LTX23_video_vae_bf16.safetensors` の同名テンソルと
+   **バイト単位で一致**すること。PrunaVAEDはデコーダだけを作り直したもので統計量は
+   元のままのはずだ、という事前調査の裏づけになります。
+7. `7_output_header_roundtrip` — 書いたファイルを読み直して、キーの並び・
+   バイト範囲が隙間も重なりも無く連続していること、`__metadata__` に `config` が
+   あり `decoder_blocks` を含まないこと、`_class_name` が `PrunaVAEDDecoder` で
+   あること、そして**safetensorsライブラリ本体がこのファイルを受け付ける**こと。
+8. `8_total_size` — ファイルサイズが「8バイト＋ヘッダー＋本体」に一致し、かつ
+   本体が 690,012,512（デコーダ）＋512（統計量）バイトであること。
+
+### 7-3. 出力ファイルの中身（独立に読み直したもの）
+
+```
+n keys: 102
+first 3: ['conv_in.conv.weight', 'conv_in.conv.bias', 'up_blocks.0.res_blocks.0.conv1.conv.weight']
+last 4 : ['conv_out.conv.weight', 'conv_out.conv.bias',
+          'per_channel_statistics.mean-of-means', 'per_channel_statistics.std-of-means']
+dtypes : ['BF16']
+conv_in  shape: [1024, 128, 3, 3, 3]
+conv_out shape: [48, 64, 3, 3, 3]
+射影resnetのキー: ['up_blocks.3.norm3.weight', 'up_blocks.3.norm3.bias',
+                   'up_blocks.3.conv_shortcut.weight', 'up_blocks.3.conv_shortcut.bias',
+                   'up_blocks.6.norm3.weight', 'up_blocks.6.norm3.bias',
+                   'up_blocks.6.conv_shortcut.weight', 'up_blocks.6.conv_shortcut.bias']
+meta keys: ['config', 'license', 'model_version', 'provenance']
+config  : {"vae": {"_class_name": "PrunaVAEDDecoder", "latent_channels": 128,
+           "patch_size": 4, "norm_layer": "pixel_norm", "causal_decoder": false,
+           "timestep_conditioning": false, "decoder_base_channels": 128}}
+model_version: PrunaVAED-v2
+license : 21,393文字（LTX-2 Community License 全文。既存の
+          LTX23_video_vae_bf16.safetensors から取ったものと同一）
+provenance: {"source_repo": "PrunaAI/PrunaVAED",
+             "source_revision": "4baacd7ef66a6131439542c1f05872afe042e128",
+             "source_filename": "vae/diffusion_pytorch_model.safetensors",
+             "source_sha256": "4cbf0cbe6c185514d62c6c58c35dc42d7ea15924f34391e08be12f44bfccdf1d",
+             "converted_by": "Nz-GGUF-Converter-LTX23 convert-vae",
+             "tool_version": "1.1.0"}
+```
+
+確認できること: キーに `decoder.` も `vae.` も付いていないこと（バックエンドは
+このファイルをキー変換なしで読むため、ここに書かれた名前がそのまま
+`load_state_dict` に渡ります）、全テンソルがBF16のままであること、`config` に
+`decoder_blocks` が無いこと、そして射影resnet（PrunaVAEDが新設した、チャンネル数を
+変えるブロック）の `norm3` と `conv_shortcut` が平坦インデックス3番と6番に正しく
+配置されていること。
+
+### 7-4. 再現性の確認
+
+同じ入力から2回変換し、出力がバイト単位で同一になることを確認しました。
+
+実行コマンド（2回目。ダウンロードを飛ばし、出力先だけ変えたもの）:
+
+```
+PYTHONPATH=src .venv\Scripts\python.exe -m converter convert-vae
+  --st-path "safetensors/prunavaed/vae/diffusion_pytorch_model.safetensors"
+  --out "<一時ディレクトリ>/rerun.safetensors"
+```
+
+```
+run1 48453517849dd8c0de0d56177d8643c9fb783228d2c7ffc4286a20dfaf7dde40
+run2 48453517849dd8c0de0d56177d8643c9fb783228d2c7ffc4286a20dfaf7dde40
+identical: True
+```
+
+2回目も自己検証8項目すべてPASS（終了コード `0`）でした。出力ファイルには時刻を
+一切書き込んでいないため、再ホストしたファイルが正しいかどうかを、後から誰でも
+再変換して確かめられます。
+
+### 7-5. G1の結論
+
+ワークオーダー §9 のゲートG1が要求する4点はすべて満たしました。
+
+- `tests/test_convert_vae.py` のpytestが全PASS（18件）。既存テストの退行なし。
+- 実ファイル（revision固定・SHA-256照合済み）に対する `convert-vae` の実行が成功し、
+  §5.3 の自己検証8項目がすべてPASS。
+- 実行コマンドと出力全文を本節に記録。
+- 出力ファイルのサイズ（690,047,968バイト）・テンソル本数（102本）・
+  パラメータ総数（345,006,256）を明記。
+
+なお、後続のゲート（G2以降＝バックエンド側の読み込み・数値の健全性・速度の採否
+判定）は本リポジトリの範囲外で、バックエンド側の `Docs/VERIFICATION_LOG.md` §52 に
+記録されます。
