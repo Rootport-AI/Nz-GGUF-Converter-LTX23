@@ -1,5 +1,37 @@
 # Nz-GGUF-Converter-LTX23
 
+## LTX 2.5 conversion (opt-in, source-locked)
+
+The existing commands remain LTX 2.3 by default. LTX 2.5 is selected only
+with `--model ltx25`; E1-E3 are pinned from the authenticated official source
+and the separately reviewed E4 map is approved. The staged E5 conversion and
+E6 numerical evidence have completed for the approved map; this does not
+authorize publication or backend use. It never derives a type map from a
+third-party GGUF.
+
+The approved E4 policy uses the following explicit staging sequence. The
+completed staging artifact remains separate from publication and backend
+acceptance:
+
+```
+run.bat inspect --model ltx25
+run.bat convert --model ltx25
+run.bat self-verify --model ltx25
+```
+
+`all` and `extract-typemap` are intentionally LTX 2.3-only. LTX 2.5 emits
+only the 4,091-key transformer component; it explicitly excludes the two
+officially matched Gemma connector components. Each source dtype must match
+the E3 safetensors-header per-key BF16/F32 profile. `build-map` is a
+maintainer review operation, not a normal conversion step: it always writes
+`typemap/ltx25_conversion_map.draft.json`, and refuses the approved E4 path.
+The already approved E4 map is the only map accepted by conversion. See
+`Docs/LTX25_CONVERSION_MODE_SPEC.md` for the source gate and output protocol.
+
+Q4_K uses bounded 1024-block tasks. LTX 2.3 keeps one worker by default;
+LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
+`--quant-workers`). This changes neither the float32 kernel nor output bytes.
+
 このリポジトリは、Nz-LTX23（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
 
 1. **GGUF変換**（このツールの出発点）— LTX 2.3のファインチューンモデル「Sulphur 2 base」のsafetensors（PyTorchの重みファイル形式、約43GB）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）形式に変換します。

@@ -43,6 +43,8 @@ from typing import Any
 from . import convert as convert_mod
 from . import convert_vae as convert_vae_mod
 from . import download as download_mod
+from . import ltx25 as ltx25_mod
+from . import quant_kernels as quant_kernels_mod
 from . import typemap as typemap_mod
 from . import verify as verify_mod
 
@@ -65,10 +67,92 @@ def _resolve_path(value: str | None, default: Path) -> Path:
     return Path(value) if value else default
 
 
+def _model(args: argparse.Namespace) -> str:
+    """Return the selected frozen profile; omission remains legacy LTX 2.3."""
+    return getattr(args, "model", "ltx23")
+
+
+def _ltx25_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Path]:
+    """Resolve LTX 2.5-only defaults without touching legacy path resolution."""
+    defaults = ltx25_mod.default_paths_from_config(config, _PROJECT_ROOT)
+    return {
+        "source": _resolve_path(getattr(args, "st_path", None), defaults["source"]),
+        "inventory": _resolve_path(getattr(args, "inventory", None), defaults["inventory"]),
+        "oracle": _resolve_path(getattr(args, "builder_oracle", None), defaults["oracle"]),
+        "map": _resolve_path(getattr(args, "map", None), defaults["map"]),
+        "draft_map": defaults["draft_map"],
+        "output": _resolve_path(getattr(args, "out", None), defaults["output"]),
+    }
+
+
+def _ltx25_only(args: argparse.Namespace, command: str) -> bool:
+    if _model(args) == "ltx25":
+        return True
+    print(f"{command} is available only with --model ltx25", file=sys.stderr)
+    return False
+
+
+def _require_ltx25_source_lock(config: dict[str, Any]) -> ltx25_mod.SourceLock:
+    lock = ltx25_mod.source_lock_from_config(config)
+    if not lock.complete:
+        raise ltx25_mod.SourceLockIncompleteError(
+            "ltx25 source-lock-incomplete: authenticated official source SHA-256/LFS hash is "
+            "required before this command"
+        )
+    return lock
+
+
+def _quant_worker_count(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    requested = getattr(args, "quant_workers", None)
+    if requested is not None:
+        return quant_kernels_mod.validate_quant_workers(requested)
+    if _model(args) == "ltx25":
+        profile = config.get("profiles", {}).get("ltx25", {})
+        if isinstance(profile, dict):
+            return quant_kernels_mod.validate_quant_workers(profile.get("quant_workers", 4))
+        return 4
+    return 1
+
+
+def _quant_worker_argument(text: str) -> int:
+    try:
+        return quant_kernels_mod.validate_quant_workers(int(text))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
 # --------------------------------------------------------------------------
 # subcommand handlers
 # --------------------------------------------------------------------------
 def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25":
+        lock = _require_ltx25_source_lock(config)
+        if any(
+            getattr(args, name, None) is not None
+            for name in ("repo_id", "filename", "expected_size", "revision", "sha256")
+        ):
+            raise ltx25_mod.SourceRejectedError(
+                "ltx25 source rejected: --repo-id/--filename/--expected-size/--revision/--sha256 "
+                "cannot override the frozen source lock"
+            )
+        defaults = ltx25_mod.default_paths_from_config(config, _PROJECT_ROOT)
+        local_dir = _resolve_path(getattr(args, "local_dir", None), defaults["local_dir"])
+        print(f"Repo    : {lock.repo_id}")
+        print(f"Filename: {lock.filename}")
+        print(f"Dest dir: {local_dir}")
+        print(f"Revision: {lock.artifact_revision}")
+        print(f"SHA-256 : {lock.source_sha256}")
+        path = download_mod.download(
+            lock.repo_id,
+            lock.filename,
+            local_dir,
+            int(lock.expected_size),
+            lock.artifact_revision,
+            lock.source_sha256,
+        )
+        print(f"Download complete: {path}")
+        return 0
+
     source = config["source"]
     repo_id = getattr(args, "repo_id", None) or source["repo_id"]
     filename = getattr(args, "filename", None) or source["filename"]
@@ -93,6 +177,12 @@ def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_extract_typemap(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25":
+        print(
+            "extract-typemap is ltx23-only; LTX 2.5 uses inspect -> build-map -> convert -> self-verify.",
+            file=sys.stderr,
+        )
+        return 1
     reference_gguf_path = _resolve_path(
         getattr(args, "reference", None), Path(config["reference"]["gguf_path"])
     )
@@ -137,6 +227,35 @@ def cmd_extract_typemap(args: argparse.Namespace, config: dict[str, Any]) -> int
 
 
 def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25":
+        lock = _require_ltx25_source_lock(config)
+        quant_workers = _quant_worker_count(args, config)
+        paths = _ltx25_paths(args, config)
+        if not paths["source"].is_file():
+            print(f"LTX 2.5 source safetensors not found: {paths['source']}", file=sys.stderr)
+            return 1
+        if not paths["map"].is_file():
+            print(
+                f"LTX 2.5 conversion map not found: {paths['map']} "
+                "(run inspect then build-map after the source lock is complete)",
+                file=sys.stderr,
+            )
+            return 1
+        if not paths["oracle"].is_file():
+            print(f"LTX 2.5 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+            return 1
+        result = ltx25_mod.convert_ltx25(
+            paths["source"],
+            paths["map"],
+            paths["output"],
+            source_lock=lock,
+            force=getattr(args, "force", False),
+            builder_oracle_path=paths["oracle"],
+            quant_workers=quant_workers,
+        )
+        print(f"LTX 2.5 conversion/self-verify complete: {result}")
+        return 0
+
     src = config["source"]
     default_st_path = _PROJECT_ROOT / src["local_dir"] / src["filename"]
     st_path = _resolve_path(getattr(args, "st_path", None), default_st_path)
@@ -166,7 +285,13 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
     print(f"Typemap: {typemap_path}")
     print(f"Output : {out_path}")
 
-    result = convert_mod.convert(st_path, typemap_path, out_path, reference_expected=reference_expected)
+    result = convert_mod.convert(
+        st_path,
+        typemap_path,
+        out_path,
+        reference_expected=reference_expected,
+        quant_workers=_quant_worker_count(args, config),
+    )
     print(f"Done: {result}")
     return 0
 
@@ -242,6 +367,40 @@ def cmd_convert_vae(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25":
+        _require_ltx25_source_lock(config)
+        paths = _ltx25_paths(args, config)
+        if not paths["source"].is_file():
+            print(f"LTX 2.5 source safetensors not found: {paths['source']}", file=sys.stderr)
+            return 1
+        if not paths["inventory"].is_file():
+            print(f"LTX 2.5 canonical inventory not found: {paths['inventory']}", file=sys.stderr)
+            return 1
+        if not paths["map"].is_file():
+            print(f"LTX 2.5 conversion map not found: {paths['map']}", file=sys.stderr)
+            return 1
+        if not paths["oracle"].is_file():
+            print(f"LTX 2.5 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+            return 1
+        if not paths["output"].is_file():
+            print(f"LTX 2.5 output GGUF not found: {paths['output']}", file=sys.stderr)
+            return 1
+        manifest_path = _resolve_path(getattr(args, "manifest", None), Path(f"{paths['output']}.manifest.json"))
+        manifest = ltx25_mod.verify_ltx25(
+            paths["output"],
+            paths["map"],
+            manifest_path=manifest_path,
+            inventory_path=paths["inventory"],
+            source_path=paths["source"],
+            source_lock=_require_ltx25_source_lock(config),
+            builder_oracle_path=paths["oracle"],
+        )
+        print(
+            f"LTX 2.5 static self-verification passed: {manifest['tensor_count']} tensors, "
+            f"output SHA-256 {manifest['output_sha256']}"
+        )
+        return 0
+
     out_cfg = config["output"]
     default_out_path = _PROJECT_ROOT / out_cfg["dir"] / out_cfg["filename"]
     output_path = _resolve_path(getattr(args, "out", None), default_out_path)
@@ -263,6 +422,12 @@ def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25":
+        print(
+            "all is ltx23-only; LTX 2.5 requires inspect -> build-map -> convert -> self-verify.",
+            file=sys.stderr,
+        )
+        return 1
     print("=== [1/4] download ===")
     rc = cmd_download(args, config)
     if rc != 0:
@@ -300,6 +465,62 @@ def cmd_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def cmd_inspect(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Write the canonical E3 inventory for the selected LTX 2.5 source."""
+    if not _ltx25_only(args, "inspect"):
+        return 1
+    lock = _require_ltx25_source_lock(config)
+    paths = _ltx25_paths(args, config)
+    if not paths["source"].is_file():
+        print(f"LTX 2.5 source safetensors not found: {paths['source']}", file=sys.stderr)
+        return 1
+    if not paths["oracle"].is_file():
+        print(f"LTX 2.5 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+        return 1
+    inventory = ltx25_mod.inspect_ltx25(
+        paths["source"],
+        source_lock=lock,
+        audit_path=paths["inventory"],
+        builder_oracle_path=paths["oracle"],
+    )
+    emitted = sum(record["classification"] == "emit" for record in inventory.tensors)
+    excluded = len(inventory.tensors) - emitted
+    print(
+        f"LTX 2.5 inventory written: {paths['inventory']} "
+        f"({emitted} emitted, {excluded} excluded, SHA-256 {inventory.inventory_sha256})"
+    )
+    return 0
+
+
+def cmd_build_map(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Build the direct-lookup E4 map; conversion requires explicit approval."""
+    if not _ltx25_only(args, "build-map"):
+        return 1
+    _require_ltx25_source_lock(config)
+    paths = _ltx25_paths(args, config)
+    map_path = _resolve_path(getattr(args, "map", None), paths["draft_map"])
+    if not paths["inventory"].is_file():
+        print(
+            f"LTX 2.5 inventory not found: {paths['inventory']} (run inspect first)",
+            file=sys.stderr,
+        )
+        return 1
+    if map_path.resolve() == paths["map"].resolve():
+        print(
+            f"LTX 2.5 approved E4 path is protected: {paths['map']} "
+            "(build-map writes a review draft; select a distinct --map path)",
+            file=sys.stderr,
+        )
+        return 1
+    policy = ltx25_mod.build_policy_map(paths["inventory"], map_path)
+    print(
+        f"LTX 2.5 {policy['status']} conversion map written: {map_path} "
+        f"({len(policy['tensors'])} tensors, SHA-256 {policy['map_sha256']})"
+    )
+    print("Review the draft and promote a separately reviewed checked-in E4 map before convert.")
+    return 0
+
+
 # --------------------------------------------------------------------------
 # argparse wiring
 # --------------------------------------------------------------------------
@@ -315,6 +536,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True, metavar="command")
+
+    def add_model_option(command_parser: argparse.ArgumentParser) -> None:
+        command_parser.add_argument(
+            "--model",
+            choices=("ltx23", "ltx25"),
+            default="ltx23",
+            help="Frozen conversion profile (default: ltx23; ltx25 is explicit and gated).",
+        )
 
     # -- download ----------------------------------------------------------
     p_download = subparsers.add_parser(
@@ -356,6 +585,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: config.toml [source].sha256 if present, else no check)"
         ),
     )
+    add_model_option(p_download)
     p_download.set_defaults(handler=cmd_download)
 
     # -- extract-typemap -----------------------------------------------------
@@ -375,6 +605,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--typemap",
         help="Output path for the typemap JSON (default: config.toml [reference].typemap_path)",
     )
+    add_model_option(p_typemap)
     p_typemap.set_defaults(handler=cmd_extract_typemap)
 
     # -- convert -------------------------------------------------------------
@@ -394,6 +625,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--typemap", help="Path to the typemap JSON (default: config.toml [reference].typemap_path)"
     )
     p_convert.add_argument(
+        "--map",
+        help="LTX 2.5 concrete conversion map (default: config.toml [profiles.ltx25].map_path)",
+    )
+    p_convert.add_argument(
+        "--builder-oracle",
+        help="LTX 2.5 pinned E2 builder-oracle JSON path",
+    )
+    p_convert.add_argument(
         "--out", help="Output GGUF path (default: config.toml [output] dir/filename)"
     )
     p_convert.add_argument(
@@ -406,11 +645,24 @@ def build_parser() -> argparse.ArgumentParser:
             "for a partial/fixture typemap)"
         ),
     )
+    p_convert.add_argument(
+        "--force",
+        action="store_true",
+        help="With --model ltx25, replace an existing output only after temp self-verification.",
+    )
+    p_convert.add_argument(
+        "--quant-workers",
+        type=_quant_worker_argument,
+        default=None,
+        help="Q4_K workers: ltx23 default 1; ltx25 profile default 4 (range: 1-8)",
+    )
+    add_model_option(p_convert)
     p_convert.set_defaults(handler=cmd_convert)
 
     # -- verify ----------------------------------------------------------
     p_verify = subparsers.add_parser(
         "verify",
+        aliases=["self-verify"],
         help="Verify the converted GGUF's structure against the reference GGUF.",
         description=(
             "Compare tensor names/order/types/shapes and KV metadata between "
@@ -424,7 +676,54 @@ def build_parser() -> argparse.ArgumentParser:
     p_verify.add_argument(
         "--reference", help="Path to the reference GGUF (default: config.toml [reference].gguf_path)"
     )
+    p_verify.add_argument(
+        "--map",
+        help="LTX 2.5 concrete conversion map (default: config.toml [profiles.ltx25].map_path)",
+    )
+    p_verify.add_argument(
+        "--manifest",
+        help="LTX 2.5 manifest path (default: <out>.manifest.json)",
+    )
+    p_verify.add_argument(
+        "--st-path", help="LTX 2.5 source safetensors path for self-verification"
+    )
+    p_verify.add_argument("--inventory", help="LTX 2.5 canonical inventory JSON path")
+    p_verify.add_argument("--builder-oracle", help="LTX 2.5 pinned E2 builder-oracle JSON path")
+    add_model_option(p_verify)
     p_verify.set_defaults(handler=cmd_verify)
+
+    # -- inspect (LTX 2.5) -----------------------------------------------
+    p_inspect = subparsers.add_parser(
+        "inspect",
+        help="Inspect the official LTX 2.5 header and write its canonical inventory.",
+        description=(
+            "LTX 2.5 only: validates the frozen official source lock, safetensors "
+            "header, metadata config, E2 component key/shape classification, and E3 BF16/F32 rows."
+        ),
+    )
+    p_inspect.add_argument("--st-path", help="Official LTX 2.5 source safetensors path")
+    p_inspect.add_argument("--inventory", help="Output canonical inventory JSON path")
+    p_inspect.add_argument("--builder-oracle", help="Pinned E2 builder-oracle JSON path")
+    add_model_option(p_inspect)
+    p_inspect.set_defaults(handler=cmd_inspect)
+
+    # -- build-map (LTX 2.5) ---------------------------------------------
+    p_build_map = subparsers.add_parser(
+        "build-map",
+        aliases=["build-policy"],
+        help="Build a review-only LTX 2.5 draft map from the canonical inventory.",
+        description=(
+            "LTX 2.5 only: creates a review-only one-row-per-tensor draft. It cannot "
+            "write the approved E4 path, approve, or convert the map."
+        ),
+    )
+    p_build_map.add_argument("--inventory", help="Canonical inventory JSON path")
+    p_build_map.add_argument(
+        "--map",
+        help="Output review-draft map JSON path (default: [profiles.ltx25].draft_map_path)",
+    )
+    add_model_option(p_build_map)
+    p_build_map.set_defaults(handler=cmd_build_map)
 
     # -- convert-vae ---------------------------------------------------------
     p_convert_vae = subparsers.add_parser(
@@ -524,6 +823,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-extract the typemap even if it already exists",
     )
+    add_model_option(p_all)
     p_all.set_defaults(handler=cmd_all, reference_expected=True)
 
     return parser
@@ -547,6 +847,11 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         return args.handler(args, config)
+    except ltx25_mod.Ltx25Error as exc:
+        # Admission/map/output failures are expected user-facing outcomes for
+        # the gated profile.  Keep them concise; a traceback adds no remedy.
+        print(f"Error: '{args.command}' failed: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Error: '{args.command}' failed: {exc}", file=sys.stderr)
         traceback.print_exc()

@@ -24,7 +24,7 @@ import gguf.quants as gq
 import numpy as np
 import pytest
 
-from converter.convert import convert
+from converter.convert import _register_tensor_info, convert
 from converter.typemap import save_typemap
 
 # --------------------------------------------------------------------------
@@ -211,6 +211,17 @@ def test_convert_returns_pathlib_path(tmp_path):
     st, tm, out, _ = _build(tmp_path)
     result = convert(st, tm, out, reference_expected=False)
     assert isinstance(result, Path)
+
+
+def test_register_tensor_info_uses_value_error_not_optimization_assertion():
+    writer = gguf.GGUFWriter(None, arch="ltxv")
+    record = {
+        "ggml_type": "BF16",
+        "shape_logical": [4],
+        "nbytes": 999,
+    }
+    with pytest.raises(ValueError, match="computed nbytes"):
+        _register_tensor_info(writer, "fixture.weight", record)
 
 
 # --------------------------------------------------------------------------

@@ -37,11 +37,15 @@ Public API
 
 from __future__ import annotations
 
+from concurrent.futures import Executor, ThreadPoolExecutor
+
 import numpy as np
 
 QK_K = 256
 K_SCALE_SIZE = 12
 GROUP_MAX_EPS = np.float32(1e-15)
+Q4_K_BLOCKS_PER_TASK = 1024
+MAX_QUANT_WORKERS = 8
 
 # Byte size of one 256-element super-block for each K-quant type.
 TYPE_SIZE = {
@@ -315,7 +319,8 @@ def _quantize_q4_k_blocks(blocks):
     dmin_bytes = dmin16.view(np.uint8).reshape(nb, 2)
 
     out = np.concatenate([d_bytes, dmin_bytes, scales12, qs], axis=1)
-    assert out.shape[1] == TYPE_SIZE["Q4_K"], out.shape
+    if out.shape[1] != TYPE_SIZE["Q4_K"]:
+        raise ValueError(f"Q4_K packed width is {out.shape[1]}, expected {TYPE_SIZE['Q4_K']}")
     return out
 
 
@@ -365,7 +370,8 @@ def _quantize_q5_k_blocks(blocks):
     dmin_bytes = dmin16.view(np.uint8).reshape(nb, 2)
 
     out = np.concatenate([d_bytes, dmin_bytes, scales12, qh, ql], axis=1)
-    assert out.shape[1] == TYPE_SIZE["Q5_K"], out.shape
+    if out.shape[1] != TYPE_SIZE["Q5_K"]:
+        raise ValueError(f"Q5_K packed width is {out.shape[1]}, expected {TYPE_SIZE['Q5_K']}")
     return out
 
 
@@ -430,7 +436,8 @@ def _quantize_q6_k_blocks(blocks):
         scales_bytes = np.where(zb, np.uint8(0), scales_bytes)
 
     out = np.concatenate([ql, qh, scales_bytes, d_bytes], axis=1)
-    assert out.shape[1] == TYPE_SIZE["Q6_K"], out.shape
+    if out.shape[1] != TYPE_SIZE["Q6_K"]:
+        raise ValueError(f"Q6_K packed width is {out.shape[1]}, expected {TYPE_SIZE['Q6_K']}")
     return out
 
 
@@ -439,16 +446,52 @@ def _quantize_q6_k_blocks(blocks):
 # ---------------------------------------------------------------------------
 def _prepare(arr):
     a = np.ascontiguousarray(arr, dtype=np.float32)
-    assert a.size % QK_K == 0, (
-        f"element count {a.size} is not a multiple of QK_K={QK_K}"
-    )
+    if a.size % QK_K:
+        raise ValueError(f"element count {a.size} is not a multiple of QK_K={QK_K}")
     return a
 
 
-def quantize_q4_k(arr: np.ndarray) -> np.ndarray:
+def validate_quant_workers(workers: int) -> int:
+    """Validate the intentionally small Q4_K worker range."""
+    if isinstance(workers, bool) or not isinstance(workers, int) or not 1 <= workers <= MAX_QUANT_WORKERS:
+        raise ValueError(f"quant workers must be an integer in [1, {MAX_QUANT_WORKERS}], got {workers!r}")
+    return workers
+
+
+def _quantize_q4_k_bounded(
+    blocks: np.ndarray,
+    *,
+    workers: int,
+    executor: Executor | None,
+) -> np.ndarray:
+    """Quantize bounded, input-ordered Q4_K batches without altering the kernel."""
+    workers = validate_quant_workers(workers)
+    if blocks.shape[0] <= Q4_K_BLOCKS_PER_TASK:
+        return _quantize_q4_k_blocks(blocks)
+
+    batches = (
+        blocks[start : start + Q4_K_BLOCKS_PER_TASK]
+        for start in range(0, blocks.shape[0], Q4_K_BLOCKS_PER_TASK)
+    )
+    if workers == 1:
+        parts = [_quantize_q4_k_blocks(batch) for batch in batches]
+    elif executor is not None:
+        parts = list(executor.map(_quantize_q4_k_blocks, batches))
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="q4-k") as local_executor:
+            parts = list(local_executor.map(_quantize_q4_k_blocks, batches))
+    return np.concatenate(parts, axis=0)
+
+
+def quantize_q4_k(
+    arr: np.ndarray,
+    *,
+    workers: int = 1,
+    executor: Executor | None = None,
+) -> np.ndarray:
     a = _prepare(arr)
     blocks = a.reshape(-1, QK_K)
-    out = _quantize_q4_k_blocks(blocks)
+    out = _quantize_q4_k_bounded(blocks, workers=workers, executor=executor)
     return out.reshape(*a.shape[:-1], -1) if a.ndim > 1 else out.reshape(-1)
 
 
@@ -473,7 +516,13 @@ _DISPATCH = {
 }
 
 
-def quantize(arr: np.ndarray, ggml_type_name: str) -> np.ndarray:
+def quantize(
+    arr: np.ndarray,
+    ggml_type_name: str,
+    *,
+    q4_workers: int = 1,
+    q4_executor: Executor | None = None,
+) -> np.ndarray:
     """Dispatch quantization by ggml type name ("Q4_K" / "Q5_K" / "Q6_K")."""
     try:
         fn = _DISPATCH[ggml_type_name]
@@ -482,4 +531,6 @@ def quantize(arr: np.ndarray, ggml_type_name: str) -> np.ndarray:
             f"quantize: unsupported type {ggml_type_name!r}; "
             f"supported: {sorted(_DISPATCH)}"
         )
+    if ggml_type_name == "Q4_K":
+        return quantize_q4_k(arr, workers=q4_workers, executor=q4_executor)
     return fn(arr)

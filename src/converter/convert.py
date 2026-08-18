@@ -46,6 +46,7 @@ import json
 import struct
 import sys
 import tomllib
+from concurrent.futures import Executor, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -56,7 +57,7 @@ from gguf.quants import quant_shape_to_byte_shape
 from tqdm import tqdm
 
 from .metadata import apply_kv, validate_metadata
-from .quant_kernels import quantize
+from .quant_kernels import quantize, validate_quant_workers
 from .typemap import EXPECTED_TOTAL, EXPECTED_TYPE_COUNTS, load_typemap
 
 # --------------------------------------------------------------------------
@@ -273,12 +274,12 @@ def _register_tensor_info(writer: GGUFWriter, name: str, rec: dict[str, Any]) ->
     byte_shape, nbytes = _byte_shape_and_nbytes(shape_logical, ggml_type_name)
 
     # Cross-check against the typemap's own recorded values (belt & braces).
-    assert nbytes == rec["nbytes"], (
-        f"{name}: computed nbytes {nbytes} != typemap {rec['nbytes']}"
-    )
-    assert list(byte_shape[:-1]) == shape_logical[:-1], (
-        f"{name}: byte_shape leading dims {byte_shape} vs logical {shape_logical}"
-    )
+    if nbytes != rec["nbytes"]:
+        raise ValueError(f"{name}: computed nbytes {nbytes} != typemap {rec['nbytes']}")
+    if list(byte_shape[:-1]) != shape_logical[:-1]:
+        raise ValueError(
+            f"{name}: byte_shape leading dims {byte_shape} vs logical {shape_logical}"
+        )
 
     qt = _ggml_type(ggml_type_name)
     if ggml_type_name == "F32":
@@ -294,7 +295,14 @@ def _register_tensor_info(writer: GGUFWriter, name: str, rec: dict[str, Any]) ->
     return nbytes
 
 
-def _tensor_payload(reader: _SafetensorsRaw, raw_key: str, rec: dict[str, Any]) -> np.ndarray:
+def _tensor_payload(
+    reader: _SafetensorsRaw,
+    raw_key: str,
+    rec: dict[str, Any],
+    *,
+    quant_workers: int = 1,
+    q4_executor: Executor | None = None,
+) -> np.ndarray:
     """Pass-2: produce the exact byte payload array for one tensor."""
     ggml_type_name = rec["ggml_type"]
     shape_logical = list(rec["shape_logical"])
@@ -305,7 +313,12 @@ def _tensor_payload(reader: _SafetensorsRaw, raw_key: str, rec: dict[str, Any]) 
         return reader.get_bf16_bytes(raw_key)
     if ggml_type_name in _KQUANT_TYPES:
         f32 = reader.get_f32(raw_key, shape_logical)
-        return quantize(f32, ggml_type_name)
+        return quantize(
+            f32,
+            ggml_type_name,
+            q4_workers=quant_workers,
+            q4_executor=q4_executor,
+        )
     raise ValueError(f"{raw_key}: unsupported target GGML type {ggml_type_name!r}")
 
 
@@ -317,6 +330,7 @@ def convert(
     typemap_path: str | Path,
     out_path: str | Path,
     reference_expected: bool = True,
+    quant_workers: int = 1,
 ) -> Path:
     """Convert a safetensors LTX-2.3 diffusion model to a Q4_K_M GGUF.
 
@@ -333,6 +347,7 @@ def convert(
     Returns:
         The output GGUF path.
     """
+    quant_workers = validate_quant_workers(quant_workers)
     st_path = Path(st_path)
     typemap_path = Path(typemap_path)
     out_path = Path(out_path)
@@ -381,19 +396,37 @@ def convert(
         writer.write_ti_data_to_file()
 
         # -- pass 2: stream tensor data, one at a time ------------------
-        for rec, exp_nbytes in tqdm(
-            list(zip(records, registered_nbytes)),
-            desc="Converting",
-            unit="tensor",
-        ):
-            raw_key = diffusion[rec["name"]]
-            payload = _tensor_payload(reader, raw_key, rec)
-            assert payload.nbytes == exp_nbytes, (
-                f"{rec['name']}: payload {payload.nbytes} bytes "
-                f"!= registered {exp_nbytes}"
-            )
-            writer.write_tensor_data(payload)
-            del payload  # drop the single resident tensor before the next one
+        # One executor spans the full conversion. workers=1 stays bounded
+        # serial and starts no background threads, preserving legacy defaults.
+        q4_executor = (
+            ThreadPoolExecutor(max_workers=quant_workers, thread_name_prefix="q4-k")
+            if quant_workers > 1
+            else None
+        )
+        try:
+            for rec, exp_nbytes in tqdm(
+                list(zip(records, registered_nbytes)),
+                desc="Converting",
+                unit="tensor",
+            ):
+                raw_key = diffusion[rec["name"]]
+                payload = _tensor_payload(
+                    reader,
+                    raw_key,
+                    rec,
+                    quant_workers=quant_workers,
+                    q4_executor=q4_executor,
+                )
+                if payload.nbytes != exp_nbytes:
+                    raise ValueError(
+                        f"{rec['name']}: payload {payload.nbytes} bytes "
+                        f"!= registered {exp_nbytes}"
+                    )
+                writer.write_tensor_data(payload)
+                del payload  # drop the single resident tensor before the next one
+        finally:
+            if q4_executor is not None:
+                q4_executor.shutdown(wait=True, cancel_futures=True)
 
         writer.close()
 

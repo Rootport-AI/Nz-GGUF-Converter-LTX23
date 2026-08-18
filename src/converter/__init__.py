@@ -6,4 +6,4 @@ PrunaVAED decoder conversion (``convert-vae``). See README.md.
 
 #: Recorded in converted files' provenance metadata, so any artefact can be
 #: traced back to the exact tool that produced it. Bump on behaviour changes.
-__version__ = "1.1.0"
+__version__ = "1.2.0"

@@ -64,6 +64,20 @@ def _s_ni(fval):
     return int((i & np.int32(0x007FFFFF)) - np.int32(0x00400000))
 
 
+def test_q4_k_bounded_workers_are_byte_identical():
+    """Independent Q4_K block batches must preserve serial bytes exactly."""
+    values = np.random.default_rng(20260819).normal(size=(2051, 256)).astype(np.float32)
+    serial = qk.quantize_q4_k(values, workers=1)
+    for workers in (2, 4, 8):
+        assert np.array_equal(serial, qk.quantize_q4_k(values, workers=workers))
+
+
+@pytest.mark.parametrize("workers", [0, 9, True, "4"])
+def test_q4_k_worker_range_is_validated(workers):
+    with pytest.raises(ValueError, match="quant workers"):
+        qk.quantize_q4_k(np.zeros((1, 256), dtype=np.float32), workers=workers)
+
+
 def _s_make_qkx2(x, w, nmax, rmin, rdelta, nstep):
     n = len(x)
     mn = x[0]; mx = x[0]; sum_w = w[0]; sum_x = _f32(sum_w * x[0])
@@ -306,13 +320,13 @@ def test_zero_and_constant_blocks(tn):
     assert np.isfinite(deq2).all()
 
 
-def test_dispatch_and_assert():
+def test_dispatch_and_invalid_size_error():
     data = np.ones((256,), dtype=np.float32)
     for tn in ("Q4_K", "Q5_K", "Q6_K"):
         assert qk.quantize(data, tn).size == qk.TYPE_SIZE[tn]
     with pytest.raises(NotImplementedError):
         qk.quantize(data, "Q3_K")
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError, match="multiple"):
         qk.quantize(np.ones((255,), dtype=np.float32), "Q4_K")
 
 
