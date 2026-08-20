@@ -99,12 +99,12 @@ def _write_component_oracle(path, config, component_rows) -> None:
     fixed = {
         "transformer": ("emit", "transformer", ""),
         "audio_embeddings_connector": (
-            "exclude",
+            "emit",
             "gemma-audio-embeddings-connector",
             "audio_embeddings_connector.",
         ),
         "video_embeddings_connector": (
-            "exclude",
+            "emit",
             "gemma-video-embeddings-connector",
             "video_embeddings_connector.",
         ),
@@ -502,9 +502,15 @@ def test_builder_oracle_must_match_exact_config_keys_and_shapes(tmp_path):
         ltx25.inspect_ltx25(source, source_lock=lock, builder_oracle_path=oracle_path)
 
 
-def test_three_component_oracle_excludes_connectors_and_preserves_official_f32(tmp_path):
+def test_three_component_oracle_emits_bare_bundle_connectors_and_preserves_official_f32(tmp_path):
     config = '{"transformer":{"width":256}}'
     source = tmp_path / "components.safetensors"
+    connector_bits = np.resize(
+        np.asarray([0x0000, 0x8000, 0x7FC1, 0x7FFF, 0x7F81, 0xFFC1, 0x3F80, 0xBF80], dtype="<u2"),
+        256,
+    )
+    audio_raw = connector_bits.tobytes()
+    video_raw = np.ascontiguousarray(connector_bits[::-1]).tobytes()
     _write_safetensors(
         source,
         [
@@ -517,13 +523,13 @@ def test_three_component_oracle_excludes_connectors_and_preserves_official_f32(t
             (
                 "model.diffusion_model.audio_embeddings_connector.audio.weight",
                 "BF16",
-                _bf16(np.ones(256, np.float32)),
+                audio_raw,
                 [1, 256],
             ),
             (
                 "model.diffusion_model.video_embeddings_connector.video.weight",
                 "BF16",
-                _bf16(np.ones(256, np.float32)),
+                video_raw,
                 [1, 256],
             ),
         ],
@@ -547,22 +553,133 @@ def test_three_component_oracle_excludes_connectors_and_preserves_official_f32(t
         builder_oracle_path=oracle,
         audit_path=inventory_path,
     )
-    assert [row["classification"] for row in inventory.tensors] == ["exclude", "emit", "exclude"]
-    emitted = next(row for row in inventory.tensors if row["classification"] == "emit")
-    assert emitted["builder_state_dict_key"] == "transformer.f32.weight"
-    assert emitted["source_dtype"] == "F32"
-    excluded = [row for row in inventory.tensors if row["classification"] == "exclude"]
-    assert {row["component_id"] for row in excluded} == {
+    assert [row["classification"] for row in inventory.tensors] == ["emit", "emit", "emit"]
+    emitted = {row["builder_state_dict_key"]: row for row in inventory.tensors}
+    assert emitted["transformer.f32.weight"]["source_dtype"] == "F32"
+    connector_names = {
+        "audio_embeddings_connector.audio.weight",
+        "video_embeddings_connector.video.weight",
+    }
+    assert connector_names <= set(emitted)
+    assert {emitted[name]["component_id"] for name in connector_names} == {
         "gemma-audio-embeddings-connector",
         "gemma-video-embeddings-connector",
     }
     policy = ltx25.build_policy_map(inventory_path, map_path)
     assert policy["status"] == "draft"
-    assert policy["tensors"][0]["ggml_type"] == "F32"
-    policy["tensors"][0]["ggml_type"] = "BF16"
+    policy_by_name = {row["name"]: row for row in policy["tensors"]}
+    assert policy_by_name["transformer.f32.weight"]["ggml_type"] == "F32"
+    assert all(policy_by_name[name]["ggml_type"] == "BF16" for name in connector_names)
+    policy_by_name["transformer.f32.weight"]["ggml_type"] = "BF16"
     _recompute_map(map_path, policy)
     with pytest.raises(ltx25.PolicyMapError, match="F32 source must remain F32"):
         ltx25.load_policy_map(map_path, require_approved=False)
+
+    policy = ltx25.build_policy_map(inventory_path, map_path)
+    connector_row = next(row for row in policy["tensors"] if row["name"] in connector_names)
+    connector_row["ggml_type"] = "Q4_K"
+    connector_row["nbytes"] = ltx25._map_nbytes(connector_row["shape_logical"], "Q4_K")
+    policy["type_counts"] = ltx25._type_counts(policy["tensors"])
+    _recompute_map(map_path, policy)
+    with pytest.raises(ltx25.PolicyMapError, match="connector .* must remain BF16"):
+        ltx25.load_policy_map(map_path, require_approved=False)
+
+    policy = ltx25.build_policy_map(inventory_path, map_path)
+    _approved_map(inventory_path, map_path)
+    output = tmp_path / "bundle.gguf"
+    ltx25.convert_ltx25(
+        source,
+        map_path,
+        output,
+        source_lock=_fixture_lock(source),
+        builder_oracle_path=oracle,
+    )
+    gguf_reader = GGUFReader(str(output))
+    gguf = {tensor.name: tensor.tensor_type.name for tensor in gguf_reader.tensors}
+    assert {name: gguf[name] for name in connector_names} == {
+        "audio_embeddings_connector.audio.weight": "BF16",
+        "video_embeddings_connector.video.weight": "BF16",
+    }
+    gguf_payloads = {
+        tensor.name: np.asarray(tensor.data).view(np.uint8).reshape(-1).tobytes()
+        for tensor in gguf_reader.tensors
+        if tensor.name in connector_names
+    }
+    assert gguf_payloads["audio_embeddings_connector.audio.weight"] == audio_raw
+    assert gguf_payloads["video_embeddings_connector.video.weight"] == video_raw
+    del gguf_reader
+
+    manifest = ltx25.verify_ltx25(
+        output,
+        map_path,
+        inventory_path=inventory_path,
+        source_path=source,
+        source_lock=_fixture_lock(source),
+        builder_oracle_path=oracle,
+    )
+    assert manifest["tensor_count"] == 3
+    assert manifest["type_counts"] == {"BF16": 2, "F32": 1}
+
+    payload_offset = output.read_bytes().find(audio_raw)
+    assert payload_offset >= 0
+    with output.open("r+b") as fh:
+        fh.seek(payload_offset)
+        fh.write(b"\x01")
+    broken_manifest = dict(manifest)
+    broken_manifest["output_sha256"] = ltx25.sha256_of_file(output)
+    output.with_name(output.name + ".manifest.json").write_bytes(
+        ltx25._canonical_json_bytes(broken_manifest) + b"\n"
+    )
+    with pytest.raises(ltx25.Ltx25Error, match="raw payload differs from source"):
+        ltx25.verify_ltx25(
+            output,
+            map_path,
+            inventory_path=inventory_path,
+            source_path=source,
+            source_lock=_fixture_lock(source),
+            builder_oracle_path=oracle,
+        )
+
+
+def test_connector_source_dtype_must_be_bf16(tmp_path):
+    config = '{"transformer":{"width":256}}'
+    source = tmp_path / "connector-f32.safetensors"
+    _write_safetensors(
+        source,
+        [
+            (
+                "model.diffusion_model.transformer.weight",
+                "BF16",
+                _bf16(np.ones(256, np.float32)),
+                [1, 256],
+            ),
+            (
+                "model.diffusion_model.audio_embeddings_connector.audio.weight",
+                "F32",
+                np.ones(256, dtype="<f4").tobytes(),
+                [1, 256],
+            ),
+            (
+                "model.diffusion_model.video_embeddings_connector.video.weight",
+                "BF16",
+                _bf16(np.ones(256, np.float32)),
+                [1, 256],
+            ),
+        ],
+        {"config": config},
+    )
+    oracle = tmp_path / "connector-oracle.json"
+    _write_component_oracle(
+        oracle,
+        config,
+        {
+            "transformer": {"transformer.weight": ([1, 256], "BF16")},
+            "audio_embeddings_connector": {"audio.weight": ([1, 256], "BF16")},
+            "video_embeddings_connector": {"video.weight": ([1, 256], "BF16")},
+        },
+    )
+    with pytest.raises(ltx25.SourceRejectedError, match="expected official E3 BF16"):
+        ltx25.inspect_ltx25(source, source_lock=_fixture_lock(source), builder_oracle_path=oracle)
 
 
 def test_cli_build_map_defaults_to_draft_and_protects_approved_path(tmp_path, capsys):
@@ -616,29 +733,90 @@ def test_checked_in_e2_e3_e4_static_contract():
         "audio_embeddings_connector": 129,
         "video_embeddings_connector": 129,
     }
-    assert inventory["inventory_sha256"] == "c6f17d849ced4743a70e3733bef678460ff0a1840fbb1d206e8578ecb08c3250"
+    assert inventory["inventory_sha256"] == "c0966ac37f55f318be16334c1f1e1c2db1f467dafde09c0c2bd1b853206bde97"
     assert inventory["builder_oracle_sha256"] == oracle["oracle_sha256"]
     emitted = [row for row in inventory["tensors"] if row["classification"] == "emit"]
     excluded = [row for row in inventory["tensors"] if row["classification"] == "exclude"]
-    assert Counter(row["source_dtype"] for row in emitted) == {"BF16": 3801, "F32": 290}
-    assert Counter((row["component_id"], row["source_dtype"]) for row in excluded) == {
-        ("gemma-audio-embeddings-connector", "BF16"): 129,
-        ("gemma-video-embeddings-connector", "BF16"): 129,
+    assert len(emitted) == 4349
+    assert not excluded
+    assert Counter(row["source_dtype"] for row in emitted) == {"BF16": 4059, "F32": 290}
+    assert Counter(row["component_id"] for row in emitted) == {
+        "transformer": 4091,
+        "gemma-audio-embeddings-connector": 129,
+        "gemma-video-embeddings-connector": 129,
     }
+    connector_rows = [
+        row for row in emitted if row["builder_state_dict_key"].startswith(("audio_embeddings_connector.", "video_embeddings_connector."))
+    ]
+    assert len(connector_rows) == 258
+    assert all(row["source_dtype"] == "BF16" for row in connector_rows)
 
     assert draft_policy["status"] == "draft"
-    assert draft_policy["map_sha256"] == "cb585e9cadc523720672b4c2a7e2eae55559a7c9626e42a232f159caf837070b"
+    assert draft_policy["map_sha256"] == "f9f3f83c43db9b06c90d700c3c2c560d52ec7edc8e114802e5f92735a9ae90c1"
     assert draft_policy["inventory_sha256"] == inventory["inventory_sha256"]
+    assert draft_policy["type_counts"] == {"BF16": 2401, "F32": 290, "Q4_K": 1658}
+    assert len(draft_policy["tensors"]) == 4349
     assert approved_policy["status"] == "approved"
-    assert approved_policy["map_sha256"] == "3225111400b7405a0ddff9c6a3f0623f5f6f82ff17c67f6e093bea6873d4282e"
+    assert approved_policy["map_sha256"] == "6d41db41a1b6b8f485434a64be198abf3f9a8b66b0dcd7441624644c19317760"
     assert approved_policy["inventory_sha256"] == inventory["inventory_sha256"]
-    assert approved_policy["type_counts"] == {"BF16": 2143, "F32": 290, "Q4_K": 1658}
+    assert approved_policy["type_counts"] == {"BF16": 2401, "F32": 290, "Q4_K": 1658}
+    assert len(approved_policy["tensors"]) == 4349
     assert sum(1 for row in approved_policy["tensors"] if row["ggml_type"] == "Q4_K") == 1658
     assert all(
         row["shape_logical"][-1] % 256 == 0
         for row in approved_policy["tensors"]
         if row["ggml_type"] == "Q4_K"
     )
+
+
+def test_pre_bundle_4091_policy_is_rejected_after_bundle_reinspection(tmp_path):
+    config = '{"transformer":{"width":256}}'
+    source = tmp_path / "bundle-source.safetensors"
+    _write_safetensors(
+        source,
+        [
+            ("model.diffusion_model.transformer.weight", "BF16", _bf16(np.ones(256, np.float32)), [1, 256]),
+            (
+                "model.diffusion_model.audio_embeddings_connector.audio.weight",
+                "BF16",
+                _bf16(np.ones(256, np.float32)),
+                [1, 256],
+            ),
+            (
+                "model.diffusion_model.video_embeddings_connector.video.weight",
+                "BF16",
+                _bf16(np.ones(256, np.float32)),
+                [1, 256],
+            ),
+        ],
+        {"config": config},
+    )
+    oracle = tmp_path / "bundle-oracle.json"
+    _write_component_oracle(
+        oracle,
+        config,
+        {
+            "transformer": {"transformer.weight": ([1, 256], "BF16")},
+            "audio_embeddings_connector": {"audio.weight": ([1, 256], "BF16")},
+            "video_embeddings_connector": {"video.weight": ([1, 256], "BF16")},
+        },
+    )
+    inventory_path = tmp_path / "bundle-inventory.json"
+    map_path = tmp_path / "pre-bundle.json"
+    ltx25.inspect_ltx25(source, source_lock=_fixture_lock(source), audit_path=inventory_path, builder_oracle_path=oracle)
+    policy = ltx25.build_policy_map(inventory_path, map_path)
+    policy["tensors"] = [row for row in policy["tensors"] if row["name"] == "transformer.weight"]
+    policy["type_counts"] = ltx25._type_counts(policy["tensors"])
+    policy["status"] = "approved"
+    _recompute_map(map_path, policy)
+    with pytest.raises(ltx25.PolicyMapError, match="missing=2"):
+        ltx25.convert_ltx25(
+            source,
+            map_path,
+            tmp_path / "must-not-write.gguf",
+            source_lock=_fixture_lock(source),
+            builder_oracle_path=oracle,
+        )
 
 
 def test_ltx25_q4_worker_gguf_is_byte_and_structure_identical(tmp_path):

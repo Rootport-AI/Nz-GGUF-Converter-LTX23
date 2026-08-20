@@ -4,13 +4,13 @@
 
 This document is the implementation contract for exactly two frozen profiles: legacy ltx23 and opt-in ltx25. The LTX 2.3 default CLI, config, reference-typemap workflow, output naming, and artifact behavior remain backward compatible.
 
-LTX 2.5 conversion accepts only the independently approved E4 map. E1-E3 are complete: a selected ltx25 command admits only the authenticated pinned source, uses the compatible official builder key/shape/component oracle, and writes/verifies the canonical inventory; it refuses a draft map for conversion. E4 is independently approved, and the staged E5/E6 run below has completed. This converter evidence does not authorize publication or backend use.
+LTX 2.5 conversion accepts only an independently approved E4 map. E1-E3 are complete: a selected ltx25 command admits only the authenticated pinned source, uses the compatible official builder key/shape/component oracle, and writes/verifies the canonical 4,349-row bundle inventory; it refuses a draft map for conversion. The replacement 4,349-row E4 is independently approved. The earlier 4,091-row map and its E5/E6 output are intentionally stale after the bundle migration and cannot be reused. Fresh E5/E6 still gate publication and backend use.
 
 The sole initial LTX 2.5 source is:
 
     diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors
 
-Its selected transformer tensors must match the authenticated E3 safetensors-header per-key source-dtype table: 3,801 BF16 and 290 F32. F16, INT8 ConvRot, FP8, NVFP4, or any other dtype that differs from the exact E3 row is rejected. The converter must not dequantize, reinterpret, or silently accept a prequantized source.
+Its 4,349 emitted tensors must match the authenticated E3 safetensors-header per-key source-dtype table: 3,801 transformer BF16, 290 transformer F32, and 258 connector BF16. F16, INT8 ConvRot, FP8, NVFP4, or any other dtype that differs from the exact E3 row is rejected. The converter must not dequantize, reinterpret, or silently accept a prequantized source.
 
 ## Evidence register and primary sources
 
@@ -20,10 +20,10 @@ The six evidence IDs avoid duplicate reports. Each artifact is canonical JSON wi
 | --- | --- | --- |
 | E1 | Source lock: official repository, artifact revision/path/size, license, and verified source content SHA-256. | Complete: authenticated Hub LFS SHA-256 and local full-file SHA-256 agree. |
 | E2 | Official-code oracle: pinned code revision, direct meta-builder recipe, and fixed component key/shape contract. It has no module-role table and is not a dtype oracle. | Complete: 4,091 transformer, 129 audio connector, 129 video connector rows exactly match official meta builders. |
-| E3 | Canonical safetensors header inventory: metadata bytes/digest, selected/excluded raw keys, normalized builder keys, dtypes, shapes, and offsets. | Complete: 4,349 independent header rows agree with converter inventory. |
-| E4 | Concrete checked-in conversion map/policy, generated from E2 plus E3. | Independently approved: SHA-256 `3225111400b7405a0ddff9c6a3f0623f5f6f82ff17c67f6e093bea6873d4282e`. |
-| E5 | Converted GGUF static verification and output digest. | Complete for the staged output: 10,706,310,592 bytes; SHA-256 `36a372cd5b8a6078b9b7422791b8cb702b9026f804c7dd5e44c5fb252d34033e`; converter and independent CLI verification both checked E1/E3/E4 linkage, 4,091 tensors, types/shapes, and config bytes. |
-| E6 | K-quant numerical evidence for the concrete E4 types. | Complete: bounded dequantization found all 18,976,866,304 Q4_K values finite. A deterministic first/middle/last-block sample of all 1,658 Q4_K tensors (4,974 blocks / 1,273,344 values) yielded MAE 0.0025929245, RMSE 0.0038327283, L2 NRMSE 0.0782986655, and max absolute error 0.0468978882 against the admitted BF16 source. |
+| E3 | Canonical safetensors header inventory: metadata bytes/digest, raw keys, normalized output keys, component roles, dtypes, shapes, and offsets. | Complete: 4,349 emitted rows; SHA-256 `c0966ac37f55f318be16334c1f1e1c2db1f467dafde09c0c2bd1b853206bde97`. |
+| E4 | Concrete checked-in conversion map/policy, generated from E2 plus E3. | Independently approved: SHA-256 `6d41db41a1b6b8f485434a64be198abf3f9a8b66b0dcd7441624644c19317760`. The former 4,091-row map is stale and rejected by E3 hash and 258 missing rows. |
+| E5 | Converted GGUF static verification and output digest. | Pending a fresh 4,349-row conversion. |
+| E6 | K-quant numerical evidence for the concrete E4 types. | Pending the fresh E5 artifact. |
 
 Primary sources, all immutable where a revision is supplied:
 
@@ -49,9 +49,9 @@ The following values are known and must be copied verbatim into the source-lock 
 | gating | auto; authenticated access and accepted terms required |
 | license | ltx-2-community-license-agreement; official LICENSE link above |
 | LFS SHA-256/Xet content hash | 31eb3cad89b9e54e99dd3baf286f70825ac4f6c660a70d9184d895be76d7bff4 |
-| canonical header inventory | `typemap/ltx25_inventory.json`, SHA-256 `c6f17d849ced4743a70e3733bef678460ff0a1840fbb1d206e8578ecb08c3250` |
+| canonical header inventory | `typemap/ltx25_inventory.json`, SHA-256 `c0966ac37f55f318be16334c1f1e1c2db1f467dafde09c0c2bd1b853206bde97` |
 
-The Git blob OID is not a SHA-256 content digest. VirusTotal URL values are not a source hash and must never be copied to the lock as one. E1 was completed with authenticated official download, byte-size check, full local SHA-256, and matching Hub LFS/Xet content hash. The reviewed E4 map permits conversion; E5/E6 remain incomplete.
+The Git blob OID is not a SHA-256 content digest. VirusTotal URL values are not a source hash and must never be copied to the lock as one. E1 was completed with authenticated official download, byte-size check, full local SHA-256, and matching Hub LFS/Xet content hash. The approved replacement E4 permits a fresh conversion; E5/E6 remain incomplete.
 
 ## Audited current repository and backend constraints
 
@@ -102,7 +102,7 @@ eight through `--quant-workers`. One executor spans a conversion, avoiding
 nested pools and unbounded per-tensor workspaces. Output must be byte-identical
 for one, two, four, or eight workers.
 
-Gemma, text encoder/projection, VAE, audio VAE, vocoder, upscalers, and LoRAs are outside ltx25 transformer GGUF scope and must not be emitted.
+Gemma language-model weights, text projection, VAE, audio VAE, vocoder, upscalers, and LoRAs are outside ltx25 transformer GGUF scope and must not be emitted. The two source-bundled embedding-connector components are the explicit exception: they are emitted in BF16 under their bare connector keys to preserve the existing LTX bundle-loader contract.
 
 ## Official oracle, metadata, and component classification
 
@@ -110,11 +110,11 @@ E2 uses the official metadata to construct the three direct meta builders and ob
 
 For the split LTX 2.5 artifact, config.transformer exists and the artifact does not bundle vae, audio_vae, or vocoder. It does contain two Gemma embedding-connector components. The fixed exactly-one classification for every raw header key is:
 
-- emit: after the one `model.diffusion_model.` strip, a key not in either connector prefix is a transformer `builder_state_dict_key` (4,091 rows).
-- exclude(component-id): `audio_embeddings_connector.` (129 rows) and `video_embeddings_connector.` (129 rows) are verified against their official meta-builder state dicts after their component-prefix strip, and are excluded as the two explicit Gemma component IDs.
+- emit(transformer): after the one `model.diffusion_model.` strip, a non-connector key is a transformer `builder_state_dict_key` (4,091 rows).
+- emit(bundle connector): `audio_embeddings_connector.` (129 rows) and `video_embeddings_connector.` (129 rows) are verified against their official meta-builder state dicts after their component-prefix strip, retain their explicit Gemma component IDs in E3, and emit their bare stripped names to GGUF as BF16.
 - error: unknown key, no classification, or more than one classification.
 
-There is no other category and no silent drop. Each of the three component key/shape sets must match E2 exactly before E3 is written; E3 then records the exact per-key source dtype from the authenticated safetensors header. Gemma connector weights never enter transformer GGUF.
+There is no other category and no silent drop. Each of the three component key/shape sets must match E2 exactly before E3 is written; E3 then records the exact per-key source dtype from the authenticated safetensors header. All 4,349 rows emit; only the 258 connector rows use component-key shape comparison rather than the transformer builder key set.
 
 Metadata source is __metadata__["config"]. It must be valid JSON and contain top-level config.transformer. Preserve its UTF-8 JSON bytes exactly in the output config KV; parse a copy only for validation. Do not reserialize or invent fields.
 
@@ -137,11 +137,11 @@ The authenticated official artifact is inspected before any tensor payload conve
 1. Require E1 repository, artifact revision/path, exact byte size, and local full SHA-256 to match the completed lock. Use explicit exceptions and raise ValueError or a domain error; never rely on assert for security/correctness.
 2. Read the safetensors header only. Validate length, JSON type, duplicate JSON keys, metadata type, tensor name uniqueness, non-negative integer shapes, data offset structure/bounds/non-overlap, and exact dtype-times-shape payload byte count.
 3. Preserve raw config bytes, validate JSON and top-level transformer, and build E2 meta model from the parsed copy.
-4. Classify every raw tensor exactly once; normalize emit keys with exactly one model.diffusion_model strip; compare key and logical shape sets exactly with E2. Missing, extra, duplicate, shape mismatch, unknown, and multi-match errors show count plus bounded sorted examples.
-5. Require every emitted and explicitly excluded row to match E2 key/shape exactly, and require its source dtype to match the authenticated E3 per-key header allowlist (BF16 or F32 for emitted rows; BF16 for both connector components). This E3 allowlist and E1 source pin are the admission authority. Strings such as int8, fp8, quant, or convrot are diagnostics only; they may improve error messages but cannot alone reject a source.
-6. Write E3 inventory only after all header/admission checks pass. Its minimal records are raw_key, classification, component_id when excluded, builder_state_dict_key when emitted, source_dtype, shape_logical, data_offsets, config_bytes_sha256, and inventory SHA-256.
+4. Classify every raw tensor exactly once; normalize all emit keys with exactly one model.diffusion_model strip; compare transformer and both connector key/shape sets exactly with E2. Missing, extra, duplicate, shape mismatch, unknown, and multi-match errors show count plus bounded sorted examples.
+5. Require every emitted row to match E2 key/shape exactly, and require its source dtype to match the authenticated E3 per-key header allowlist (transformer BF16/F32; both connector components BF16 only). This E3 allowlist and E1 source pin are the admission authority. Strings such as int8, fp8, quant, or convrot are diagnostics only; they may improve error messages but cannot alone reject a source.
+6. Write E3 inventory only after all header/admission checks pass. Its minimal records are raw_key, classification, component_id, component_state_dict_key for connectors, builder_state_dict_key/output name, source_dtype, shape_logical, data_offsets, config_bytes_sha256, and inventory SHA-256.
 
-This rejects prequantized inputs by observed selected dtype, not unreliable substring guesses. It also guarantees no Gemma/VAE component is mixed into transformer GGUF.
+This rejects prequantized inputs by observed selected dtype, not unreliable substring guesses. It excludes unrelated Gemma/VAE components while preserving the source-bundled connector payload required by the LTX bundle loader.
 
 ## E4 concrete conversion map and policy
 
@@ -151,7 +151,7 @@ E4 is a small checked-in JSON or YAML map created only after E1-E3. It is data, 
 
 Runtime conversion uses lookup only. Every E3 emitted builder key must map to exactly one E4 entry, with exact dtype and shape equality. Unknown source key, duplicate map name, missing map record, multiple map record, unsupported GGML type, invalid byte count, or K block-alignment failure is an error.
 
-E3 confirms 4,091 emitted transformer rows: 3,801 BF16 and 290 F32. The approved E4 has 1,658 Q4_K, 2,143 BF16, and 290 F32 concrete rows. The independent E4 reviewer evidence, rather than E2, records the official `named_modules` role audit: it preserves the 290 E3 F32 AdaLN/control-table rows as F32; 1,564 Linear biases, 576 RMSNorm weights, the direct keyframe-position parameter, and the two 128-wide patchify boundary weights as BF16; and assigns Q4_K only to 1,658 concrete BF16 rank-2 `torch.nn.Linear` weights whose last dimension is divisible by 256. Q5_K and Q6_K have no initial exceptions. Thus every row is concrete and exactly one type is selected; no pattern rule runs at conversion time. E4 contains only types supported by the existing writer until new writer/kernel support is separately designed.
+E3 confirms 4,349 emitted rows: transformer 3,801 BF16 and 290 F32, plus 258 BF16 connectors. The approved replacement E4 has 1,658 Q4_K, 2,401 BF16, and 290 F32 concrete rows. The independent E4 reviewer evidence, rather than E2, records the official `named_modules` role audit for the transformer: it preserves the 290 E3 F32 AdaLN/control-table rows as F32; 1,564 Linear biases, 576 RMSNorm weights, the direct keyframe-position parameter, and the two 128-wide patchify boundary weights as BF16; and assigns Q4_K only to 1,658 concrete BF16 rank-2 `torch.nn.Linear` weights whose last dimension is divisible by 256. The 258 connector rows have the direct `connector-bf16-bundle-preservation` rule: their source must be BF16 and their target must remain BF16, regardless of shape. Q5_K and Q6_K have no initial exceptions. Thus every row is concrete and exactly one type is selected; no pattern rule runs at conversion time. E4 contains only types supported by the existing writer until new writer/kernel support is separately designed.
 
 ## Output, manifest, logging, and rollback
 
@@ -177,14 +177,15 @@ Converter CI remains converter-only: no backend, Torch, or full-artifact depende
 - Existing LTX 2.3 regression and omitted-model versus explicit-ltx23 equivalence.
 - Header-only small fixtures for malformed header/JSON, duplicate fields/names, shapes, offsets, bounds, byte-size mismatch, config absence/invalid JSON, and exact-one classification.
 - E3-selected BF16/F32 acceptance and F16/INT8/FP8/NVFP4 or any E3 dtype-mismatch rejection. Substring markers are diagnostic-only tests, never an independent reject test.
-- E2 exact raw-to-builder key/shape component comparison plus E3 per-key dtype comparison, one-strip normalization, three-component exclude behavior, and no VAE/Gemma leakage into transformer GGUF.
+- E2 exact raw-to-builder/component key-shape comparison plus E3 per-key dtype comparison, one-strip normalization, 4,091+129+129 bundle emission, bare connector GGUF names, BF16 connector preservation, and no unrelated VAE/Gemma leakage.
 - E4 map lookup, duplicate/missing/unknown/multi-match behavior, shape/byte/K alignment, and static raw-key/shape/GGML handoff.
 - Synthetic F32/BF16/Q4_K/Q5_K/Q6_K writer coverage and existing K numerical tests. E6 covers only concrete types actually selected by E4.
 - Config byte preservation, GGUF metadata/static self-verification, disk-preflight calculation, temporary-file behavior, manifest absence/mismatch, and output commit ordering.
 
-The staged artifact has completed the converter gates: authenticated E1 download; E3 header extraction; E2 meta-builder exact oracle; reviewer-approved E4; full conversion/E5; and E6 numerical checks. Backend integration is a separate repository/stage. After it implements LTX 2.5 construction, run one representative fixed-seed end-to-end case; no broad benchmark campaign is part of this plan.
+E1-E4 are complete for the corrected bundle contract. E5/E6 require a fresh 4,349-row artifact. Backend integration remains a separate repository/stage. After it implements LTX 2.5 construction, run one representative fixed-seed end-to-end case; no broad benchmark campaign is part of this plan.
 
 ## Open gates
 
-1. Separate backend implementation/acceptance after converter E1-E6 pass, including one fixed-seed representative end-to-end case.
-2. Any publication/release decision remains outside this converter evidence and must not be inferred from the staging output.
+1. Fresh E5/E6 evidence for approved E4 `typemap/ltx25_conversion_map.json` (SHA-256 `6d41db41a1b6b8f485434a64be198abf3f9a8b66b0dcd7441624644c19317760`).
+2. Separate backend implementation/acceptance after converter E1-E6 pass, including one fixed-seed representative end-to-end case.
+3. Any publication/release decision remains outside this converter evidence and must not be inferred from a staging output.

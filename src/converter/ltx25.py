@@ -58,16 +58,20 @@ _ALLOWED_TARGET_TYPES = {"F32", "BF16", "Q4_K", "Q5_K", "Q6_K"}
 _LTX25_COMPONENT_RULES = {
     "transformer": {"classification": "emit", "component_id": "transformer", "native_prefix": ""},
     "audio_embeddings_connector": {
-        "classification": "exclude",
+        "classification": "emit",
         "component_id": "gemma-audio-embeddings-connector",
         "native_prefix": "audio_embeddings_connector.",
     },
     "video_embeddings_connector": {
-        "classification": "exclude",
+        "classification": "emit",
         "component_id": "gemma-video-embeddings-connector",
         "native_prefix": "video_embeddings_connector.",
     },
 }
+_CONNECTOR_COMPONENTS = ("audio_embeddings_connector", "video_embeddings_connector")
+_CONNECTOR_GGUF_PREFIXES = tuple(
+    _LTX25_COMPONENT_RULES[name]["native_prefix"] for name in _CONNECTOR_COMPONENTS
+)
 _DTYPE_BITS = {
     "BOOL": 8,
     "U8": 8,
@@ -454,7 +458,7 @@ def load_builder_oracle(path: str | Path) -> dict[str, Any]:
     contracts: dict[str, dict[str, Any]] = {}
     if components is None:
         # Small synthetic test or legacy E2 fixture: this is transformer-only
-        # and cannot describe the production Gemma connector exclusions.
+        # and cannot describe the production Gemma connector components.
         contracts["transformer"] = {
             **_LTX25_COMPONENT_RULES["transformer"],
             "state_dict_shapes": _validated_oracle_shapes(
@@ -471,6 +475,16 @@ def load_builder_oracle(path: str | Path) -> dict[str, Any]:
             if not isinstance(component, dict):
                 raise InventoryMismatchError(f"ltx25 builder-oracle-missing: {name} contract is invalid")
             for field, expected in fixed.items():
+                # The original checked-in E2 recorded ``exclude`` for the two
+                # Gemma-side component roles.  E2 is a key/shape oracle, not an
+                # artifact-packaging policy: accept that legacy role spelling while
+                # normalising output classification to the fixed bundle contract.
+                if (
+                    field == "classification"
+                    and name in _CONNECTOR_COMPONENTS
+                    and component.get(field) in {"emit", "exclude"}
+                ):
+                    continue
                 if component.get(field) != expected:
                     raise InventoryMismatchError(
                         f"ltx25 builder-oracle-missing: {name} {field} does not match the fixed contract"
@@ -544,11 +558,12 @@ def inspect_ltx25(
             classification, component_name, component_key = _classify_oracle_tensor(
                 entry.raw_key, component_contracts
             )
-            value = (
-                component_key
-                if classification == "emit"
-                else component_contracts[component_name]["component_id"]
-            )
+            # Transformer names are the official builder keys.  Connector
+            # components are independently oracle-checked after their component
+            # prefix strip, but must retain their bare component prefix in GGUF so
+            # the existing LTX bundle loader can extract them.
+            native_key = entry.raw_key[len(RAW_TRANSFORMER_PREFIX) :]
+            value = component_key if component_name == "transformer" else native_key
         else:
             classification, value = _classify_tensor(entry.raw_key, exclude_prefixes)
         record: dict[str, Any] = {
@@ -558,6 +573,17 @@ def inspect_ltx25(
             "shape_logical": list(entry.shape_logical),
             "data_offsets": list(entry.data_offsets),
         }
+        if component_name is not None and component_key is not None:
+            expected_shapes = component_contracts[component_name]["state_dict_shapes"]
+            if component_key in component_keys.setdefault(component_name, {}):
+                raise InventoryMismatchError(
+                    f"ltx25 inventory mismatch: duplicate {component_name} key {component_key!r}"
+                )
+            component_keys[component_name][component_key] = list(entry.shape_logical)
+            if component_key not in expected_shapes:
+                raise InventoryMismatchError(
+                    f"ltx25 inventory mismatch: unknown {component_name} key {component_key!r}"
+                )
         if classification == "emit":
             if value is None:
                 raise InventoryMismatchError(
@@ -569,26 +595,25 @@ def inspect_ltx25(
                     f"ltx25 inventory mismatch: normalized builder key collision {builder_key!r}"
                 )
             seen_builder_keys.add(builder_key)
+            if component_name in _CONNECTOR_COMPONENTS and entry.source_dtype != "BF16":
+                raise SourceRejectedError(
+                    f"ltx25 source rejected: connector tensor {entry.raw_key!r} has dtype "
+                    f"{entry.source_dtype!r}, expected official E3 BF16"
+                )
             if entry.source_dtype not in {"BF16", "F32"}:
                 raise SourceRejectedError(
                     f"ltx25 source rejected: emitted tensor {entry.raw_key!r} has dtype "
                     f"{entry.source_dtype!r}, outside the E3 source-dtype allowlist BF16/F32"
                 )
             record["builder_state_dict_key"] = builder_key
+            if component_name is not None:
+                record["component_id"] = component_contracts[component_name]["component_id"]
+                if component_name in _CONNECTOR_COMPONENTS:
+                    record["component_state_dict_key"] = component_key
         else:
             record["component_id"] = value
             if component_name is not None and component_key is not None:
                 record["component_state_dict_key"] = component_key
-                expected_shapes = component_contracts[component_name]["state_dict_shapes"]
-                if component_key in component_keys.setdefault(component_name, {}):
-                    raise InventoryMismatchError(
-                        f"ltx25 inventory mismatch: duplicate {component_name} key {component_key!r}"
-                    )
-                component_keys[component_name][component_key] = list(entry.shape_logical)
-                if component_key not in expected_shapes:
-                    raise InventoryMismatchError(
-                        f"ltx25 inventory mismatch: unknown {component_name} key {component_key!r}"
-                    )
                 if entry.source_dtype not in {"BF16", "F32"}:
                     raise SourceRejectedError(
                         f"ltx25 source rejected: excluded {component_name} tensor {entry.raw_key!r} "
@@ -602,7 +627,7 @@ def inspect_ltx25(
     emitted = {
         record["builder_state_dict_key"]: record["shape_logical"]
         for record in records
-        if record["classification"] == "emit"
+        if record["classification"] == "emit" and record.get("component_id") in {None, "transformer"}
     }
     if expected_builder_shapes is not None:
         expected = {str(name): list(shape) for name, shape in expected_builder_shapes.items()}
@@ -623,7 +648,7 @@ def inspect_ltx25(
                 parts.append(f"shape_mismatch={len(shape_errors)} {shape_errors[:20]!r}")
             raise InventoryMismatchError("ltx25 inventory mismatch: " + "; ".join(parts))
     if component_contracts is not None and set(component_contracts) == set(_LTX25_COMPONENT_RULES):
-        for name in ("audio_embeddings_connector", "video_embeddings_connector"):
+        for name in _LTX25_COMPONENT_RULES:
             expected = component_contracts[name]["state_dict_shapes"]
             actual = component_keys.get(name, {})
             missing = sorted(set(expected) - set(actual))
@@ -748,10 +773,20 @@ def load_inventory(path: str | Path) -> dict[str, Any]:
                 not isinstance(builder_key, str)
                 or not builder_key
                 or builder_key in builder_keys
-                or component_id is not None
                 or record["source_dtype"] not in {"BF16", "F32"}
             ):
                 raise InventoryMismatchError(f"ltx25 inventory mismatch: {raw_key!r} emit classification is inconsistent")
+            if component_id is not None and component_id not in {
+                rule["component_id"] for rule in _LTX25_COMPONENT_RULES.values()
+            }:
+                raise InventoryMismatchError(f"ltx25 inventory mismatch: {raw_key!r} has invalid component_id")
+            if builder_key.startswith(_CONNECTOR_GGUF_PREFIXES):
+                if component_id not in {
+                    _LTX25_COMPONENT_RULES[name]["component_id"] for name in _CONNECTOR_COMPONENTS
+                } or record["source_dtype"] != "BF16":
+                    raise InventoryMismatchError(
+                        f"ltx25 inventory mismatch: {raw_key!r} connector emit classification is inconsistent"
+                    )
             builder_keys.add(builder_key)
         elif not isinstance(component_id, str) or not component_id or builder_key is not None:
             raise InventoryMismatchError(f"ltx25 inventory mismatch: {raw_key!r} exclude classification is inconsistent")
@@ -803,7 +838,15 @@ def build_policy_map(
             raise InventoryMismatchError(
                 f"ltx25 inventory mismatch: {name} has unsupported source dtype {dtype!r}"
             )
-        if dtype == "F32":
+        if name.startswith(_CONNECTOR_GGUF_PREFIXES):
+            if dtype != "BF16":
+                raise InventoryMismatchError(
+                    f"ltx25 inventory mismatch: connector {name} must have official BF16 source dtype"
+                )
+            default_ggml_type = "BF16"
+            rule_id = "connector-bf16-bundle-preservation"
+            reason = "LTX bundle connector remains BF16 under its bare GGUF key."
+        elif dtype == "F32":
             default_ggml_type = "F32"
             rule_id = "f32-source-preservation"
             reason = "Official E3 F32 row remains F32."
@@ -832,7 +875,7 @@ def build_policy_map(
             }
         )
     if not rows:
-        raise InventoryMismatchError("ltx25 inventory mismatch: no emitted transformer tensors")
+        raise InventoryMismatchError("ltx25 inventory mismatch: no emitted tensors")
     payload: dict[str, Any] = {
         "format": MAP_FORMAT,
         "profile": PROFILE_ID,
@@ -889,6 +932,10 @@ def load_policy_map(path: str | Path, *, require_approved: bool = True) -> dict[
             raise PolicyMapError(f"ltx25 map mismatch: {name} uses unsupported type {ggml_type!r}")
         if dtype == "F32" and ggml_type != "F32":
             raise PolicyMapError(f"ltx25 map mismatch: {name} F32 source must remain F32")
+        if name.startswith(_CONNECTOR_GGUF_PREFIXES) and (dtype != "BF16" or ggml_type != "BF16"):
+            raise PolicyMapError(
+                f"ltx25 map mismatch: connector {name} must remain BF16 for the LTX bundle loader"
+            )
         if ggml_type.startswith("Q") and (not shape or shape[-1] % 256):
             raise PolicyMapError(f"ltx25 map mismatch: {name} K-quant last dimension is not divisible by 256")
         if not isinstance(row.get("nbytes"), int) or isinstance(row["nbytes"], bool) or row["nbytes"] < 0:
@@ -1034,10 +1081,76 @@ def _type_counts(records: Iterable[dict[str, Any]]) -> dict[str, int]:
     return dict(sorted(Counter(record["ggml_type"] for record in records).items()))
 
 
+_RAW_COMPARE_CHUNK_BYTES = 4 * 1024 * 1024
+
+
+def _verify_connector_raw_bytes(
+    reader: GGUFReader,
+    source_path: Path,
+    inventory: Inventory,
+    *,
+    chunk_bytes: int = _RAW_COMPARE_CHUNK_BYTES,
+) -> None:
+    """Compare every emitted BF16 bundle connector with source bytes in bounded chunks."""
+    connector_ids = {
+        _LTX25_COMPONENT_RULES[name]["component_id"] for name in _CONNECTOR_COMPONENTS
+    }
+    connectors = [
+        record
+        for record in inventory.tensors
+        if record.get("component_id") in connector_ids
+    ]
+    if not connectors:
+        return
+    if not isinstance(chunk_bytes, int) or isinstance(chunk_bytes, bool) or chunk_bytes <= 0:
+        raise ValueError("ltx25 self-verify failed: raw compare chunk size must be positive")
+    output_by_name = {tensor.name: tensor for tensor in reader.tensors}
+    _, payload_base, _ = _read_validated_header(source_path)
+    with source_path.open("rb") as source:
+        for record in connectors:
+            name = record["builder_state_dict_key"]
+            raw_key = record["raw_key"]
+            offsets = record["data_offsets"]
+            if record.get("source_dtype") != "BF16":
+                raise Ltx25Error(
+                    f"ltx25 self-verify failed: connector {name} source dtype is not BF16"
+                )
+            tensor = output_by_name.get(name)
+            if tensor is None or tensor.tensor_type.name != "BF16":
+                raise Ltx25Error(
+                    f"ltx25 self-verify failed: connector {name} is absent or not BF16 in GGUF"
+                )
+            output_bytes = np.asarray(tensor.data)
+            if not output_bytes.flags.c_contiguous:
+                raise Ltx25Error(f"ltx25 self-verify failed: connector {name} payload is not contiguous")
+            output_raw = output_bytes.view(np.uint8).reshape(-1)
+            expected_nbytes = offsets[1] - offsets[0]
+            if output_raw.nbytes != expected_nbytes:
+                raise Ltx25Error(
+                    f"ltx25 self-verify failed: connector {name} payload bytes "
+                    f"{output_raw.nbytes} != source {expected_nbytes}"
+                )
+            source.seek(payload_base + offsets[0])
+            for start in range(0, expected_nbytes, chunk_bytes):
+                count = min(chunk_bytes, expected_nbytes - start)
+                source_chunk = source.read(count)
+                if len(source_chunk) != count:
+                    raise Ltx25Error(
+                        f"ltx25 self-verify failed: connector {raw_key} source payload is truncated"
+                    )
+                if not np.array_equal(output_raw[start : start + count], np.frombuffer(source_chunk, dtype=np.uint8)):
+                    raise Ltx25Error(
+                        f"ltx25 self-verify failed: connector {name} raw payload differs from source at byte {start}"
+                    )
+
+
 def _verify_output(
     output_path: Path,
     records: list[dict[str, Any]],
     expected_config_text: str | None = None,
+    *,
+    source_path: Path | None = None,
+    inventory: Inventory | None = None,
 ) -> None:
     reader = GGUFReader(str(output_path))
     if len(reader.tensors) != len(records):
@@ -1070,6 +1183,8 @@ def _verify_output(
     for tensor in reader.tensors:
         if tensor.tensor_type.name.startswith("Q"):
             _verify_quant_tensor_finite(tensor)
+    if source_path is not None and inventory is not None:
+        _verify_connector_raw_bytes(reader, source_path, inventory)
 
 
 def _verify_quant_tensor_finite(tensor: Any, blocks_per_chunk: int = 1024) -> None:
@@ -1174,7 +1289,7 @@ def convert_ltx25(
                 writer.close()
             if q4_executor is not None:
                 q4_executor.shutdown(wait=True, cancel_futures=True)
-        _verify_output(temp, records, inventory.config_text)
+        _verify_output(temp, records, inventory.config_text, source_path=source, inventory=inventory)
         _replace_with_retry(temp, output)
         committed = True
         output_sha = sha256_of_file(output)
@@ -1269,7 +1384,7 @@ def verify_ltx25(
         raise ManifestError("ltx25 manifest-missing: inventory SHA-256 does not match admitted source")
     if loaded_inventory.get("inventory_sha256") != inspected.inventory_sha256:
         raise InventoryMismatchError("ltx25 inventory mismatch: canonical inventory differs from admitted source")
-    _verify_output(output, records, inspected.config_text)
+    _verify_output(output, records, inspected.config_text, source_path=Path(source_path), inventory=inspected)
     return manifest
 
 

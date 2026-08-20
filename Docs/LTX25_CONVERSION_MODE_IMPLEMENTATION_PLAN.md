@@ -2,7 +2,7 @@
 
 ## Scope and non-negotiable guardrails
 
-Implement only [LTX25_CONVERSION_MODE_SPEC.md](LTX25_CONVERSION_MODE_SPEC.md). The converter phases in this plan have completed through staged E1-E6 evidence; the plan still does not authorize backend, Torch, model-registry, VAE, Gemma, audio, LoRA, UI, or generic framework work.
+Implement only [LTX25_CONVERSION_MODE_SPEC.md](LTX25_CONVERSION_MODE_SPEC.md). E1-E4 have completed for the corrected 4,349-row bundle contract; E5/E6 must be repeated with the approved replacement map. This plan still does not authorize backend, Torch, model-registry, VAE, Gemma language-model, audio, LoRA, UI, or generic framework work.
 
 The design is two frozen entries, ltx23 and ltx25, plus explicit functions/if statements. No class hierarchy, profile registry/DSL, plugin framework, dynamic import, auto-detection, quarantine, journal, database, or large benchmark suite.
 
@@ -45,12 +45,12 @@ Add an ltx25 inspect command, blocked unless E1 is complete. It reads safetensor
 
 1. Validate header length, JSON/duplicate JSON keys, metadata type, names, shapes, offsets, overlap/bounds, and dtype-times-shape byte sizes.
 2. Require metadata config JSON with config.transformer. Retain its original UTF-8 bytes.
-3. Classify each raw key exactly once: after the one model.diffusion_model strip, emit transformer keys and exclude the two E2-confirmed Gemma connector prefixes with explicit component IDs; otherwise error. The artifact has config.transformer and no vae/audio_vae/vocoder.
-4. Compare emitted key and logical shape set exactly with E2. Error on missing, extra, duplicate, unknown, multi-match, collision, or shape mismatch.
-5. Require every row to match its E2 key/shape and its authenticated E3 per-key dtype (emitted: 3,801 BF16 + 290 F32; both connectors: BF16). The E3 dtype profile and E1 pin are authority. Names/metadata containing int8, convrot, fp8, or quant are diagnostic hints only.
+3. Classify each raw key exactly once: after the one model.diffusion_model strip, emit transformer keys and the two E2-confirmed Gemma connector prefixes with explicit component IDs; connector names retain their bare prefix in GGUF. The artifact has config.transformer and no vae/audio_vae/vocoder.
+4. Compare transformer builder keys and each connector component key/logical shape set exactly with E2. Error on missing, extra, duplicate, unknown, multi-match, collision, or shape mismatch.
+5. Require every row to match its E2 key/shape and its authenticated E3 per-key dtype (transformer: 3,801 BF16 + 290 F32; connectors: 258 BF16 only). The E3 dtype profile and E1 pin are authority. Names/metadata containing int8, convrot, fp8, or quant are diagnostic hints only.
 6. Emit compact E3 records and canonical hashes. Do not create detailed duplicate histograms or redundant report families.
 
-Exit criterion: authenticated official header proves source identity, three-component handling, the E3 BF16/F32 profile, and exact E2 builder inventory. Status: complete (4,091 emit; 258 explicit Gemma connector excludes).
+Exit criterion: authenticated official header proves source identity, three-component handling, the E3 BF16/F32 profile, and exact E2 builder inventory. Status: complete (4,349 emit: 4,091 transformer plus 258 BF16 bundle connectors; 0 excludes).
 
 ## Phase 4: create E4 concrete map
 
@@ -58,9 +58,9 @@ Exit criterion: authenticated official header proves source identity, three-comp
 2. Each row is name, source_dtype, shape_logical, shape_gguf, ggml_type, nbytes, rule_id, reason, evidence_ids.
 3. Runtime uses direct map lookup. Each emitted tensor has exactly one exact dtype/shape matching row.
 4. Reject unknown/missing/duplicate/multiple rows, unsupported type, incorrect bytes, or invalid K alignment with domain errors, not asserts.
-5. E3 established 3,801 BF16 and 290 F32 emitted transformer rows. Approved E4 preserves F32 tables, biases, RMSNorm weights, the keyframe position parameter, and the two 128-wide patchify boundary weights; it assigns Q4_K to 1,658 concrete, K-row-aligned `torch.nn.Linear` weights. The supporting `named_modules` role audit is E4 reviewer evidence, not E2 data. Keep no Q5_K/Q6_K exceptions.
+5. E3 established 3,801 transformer BF16, 290 transformer F32, and 258 connector BF16 rows. Approved E4 has 1,658 Q4_K, 2,401 BF16, and 290 F32 entries. The reviewer preserves F32 tables, biases, RMSNorm weights, the keyframe position parameter, and the two 128-wide patchify boundary weights; it assigns Q4_K only to 1,658 concrete, K-row-aligned `torch.nn.Linear` weights. All 258 bare connector keys have the direct BF16-preservation rule and cannot be Q4_K. The supporting `named_modules` role audit is E4 reviewer evidence, not E2 data. Keep no Q5_K/Q6_K exceptions.
 
-Exit criterion: E4 is complete, deterministic, independently reviewable, and has evidence IDs for every row.
+Exit criterion: E4 is complete, deterministic, independently reviewable, and has evidence IDs for every row. Status: independently approved as the 4,349-row bundle map; the older 4,091-row map fails E3 hash linkage and lacks 258 rows.
 
 ## Phase 5: conversion and output protocol
 
@@ -91,11 +91,11 @@ Exit criterion: final GGUF only replaces after temp E5 success; manifest failure
 | Header/E3 | Header/JSON/duplicate/name/shape/offset/bounds/byte/config failures; exact-one classification and one-strip normalization. |
 | Admission | E3-matched BF16/F32 success; F16/INT8/FP8/NVFP4 or any per-key dtype mismatch rejection. Marker strings remain diagnostic-only. |
 | E2 handoff | Exact component key/shape compare against a small static oracle fixture; E3 owns dtype comparison; no backend/Torch dependency in normal converter CI. |
-| E4 | Direct map lookup; duplicate/missing/unknown/multiple; exact dtype/shape/bytes/K alignment. |
+| E4 | Direct map lookup; duplicate/missing/unknown/multiple; exact dtype/shape/bytes/K alignment; bare connector names and BF16-only preservation. |
 | Writer/E5/E6 | Synthetic F32/BF16/Q4_K/Q5_K/Q6_K as selected; current numerical tests; finite dequant; config byte preservation. |
 | Output | Disk calculation; temporary/final ordering; PermissionError retry/report; missing/mismatched manifest makes verify fail. |
 
-Large authenticated conversion runs only in its gated job: E1 then E2/E3 then E4 then conversion/E5/E6. It does not run in normal CI.
+Large authenticated conversion runs only in its gated job: E1 then E2/E3 then independently approved E4 then conversion/E5/E6. It does not run in normal CI.
 
 ## Separate backend stage and rollback
 

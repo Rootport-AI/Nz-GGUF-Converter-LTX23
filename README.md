@@ -4,13 +4,14 @@
 
 The existing commands remain LTX 2.3 by default. LTX 2.5 is selected only
 with `--model ltx25`; E1-E3 are pinned from the authenticated official source
-and the separately reviewed E4 map is approved. The staged E5 conversion and
-E6 numerical evidence have completed for the approved map; this does not
-authorize publication or backend use. It never derives a type map from a
-third-party GGUF.
+and the current 4,349-row E3 bundle inventory has an independently approved
+E4 map. The previous 4,091-row approved map is deliberately stale and is
+rejected by inventory hash; E5/E6 must be rerun for the replacement map. This
+does not authorize publication or backend use. It never derives a type map
+from a third-party GGUF.
 
-The approved E4 policy uses the following explicit staging sequence. The
-completed staging artifact remains separate from publication and backend
+The approved replacement E4 policy uses the following explicit staging
+sequence. The resulting artifact remains separate from publication and backend
 acceptance:
 
 ```
@@ -20,12 +21,14 @@ run.bat self-verify --model ltx25
 ```
 
 `all` and `extract-typemap` are intentionally LTX 2.3-only. LTX 2.5 emits
-only the 4,091-key transformer component; it explicitly excludes the two
-officially matched Gemma connector components. Each source dtype must match
-the E3 safetensors-header per-key BF16/F32 profile. `build-map` is a
+all 4,349 source rows after one `model.diffusion_model.` strip: 4,091
+transformer rows plus 129 audio and 129 video embedding connectors. The
+connectors retain their bare GGUF names and BF16 type so the existing LTX
+bundle loader can extract them; they are never Q4_K. Each source dtype must
+match the E3 per-key profile (4,059 BF16 and 290 F32). `build-map` is a
 maintainer review operation, not a normal conversion step: it always writes
 `typemap/ltx25_conversion_map.draft.json`, and refuses the approved E4 path.
-The already approved E4 map is the only map accepted by conversion. See
+The independently reviewed 4,349-row E4 map is accepted by conversion. See
 `Docs/LTX25_CONVERSION_MODE_SPEC.md` for the source gate and output protocol.
 
 Q4_K uses bounded 1024-block tasks. LTX 2.3 keeps one worker by default;
