@@ -29,9 +29,9 @@ Design notes
 
 Public API
 ----------
-    quantize_q4_k(arr) -> np.ndarray[uint8]
+    quantize_q4_k(arr, workers=1, executor=None) -> np.ndarray[uint8]
     quantize_q5_k(arr) -> np.ndarray[uint8]
-    quantize_q6_k(arr) -> np.ndarray[uint8]
+    quantize_q6_k(arr, workers=1, executor=None) -> np.ndarray[uint8]
     quantize(arr, ggml_type_name) -> np.ndarray[uint8]
 """
 
@@ -45,6 +45,7 @@ QK_K = 256
 K_SCALE_SIZE = 12
 GROUP_MAX_EPS = np.float32(1e-15)
 Q4_K_BLOCKS_PER_TASK = 1024
+Q6_K_BLOCKS_PER_TASK = 1024
 MAX_QUANT_WORKERS = 8
 
 # Byte size of one 256-element super-block for each K-quant type.
@@ -502,10 +503,48 @@ def quantize_q5_k(arr: np.ndarray) -> np.ndarray:
     return out.reshape(*a.shape[:-1], -1) if a.ndim > 1 else out.reshape(-1)
 
 
-def quantize_q6_k(arr: np.ndarray) -> np.ndarray:
+def _quantize_q6_k_bounded(
+    blocks: np.ndarray,
+    *,
+    workers: int,
+    executor: Executor | None,
+) -> np.ndarray:
+    """Quantize bounded, input-ordered Q6_K batches without altering the kernel.
+
+    Faithfully mirrors :func:`_quantize_q4_k_bounded`: each 1,024-block batch is
+    independent (Q6_K super-blocks never span a batch boundary), so splitting is
+    decision-preserving and the concatenated result is byte-identical to a single
+    unsplit call, for any worker count. Splitting exists to bound peak memory --
+    without it, a multi-million-block tensor (e.g. a 188,160-wide aggregate_embed
+    row) would materialize dozens of full-width float32 intermediates at once.
+    """
+    workers = validate_quant_workers(workers)
+    if blocks.shape[0] <= Q6_K_BLOCKS_PER_TASK:
+        return _quantize_q6_k_blocks(blocks)
+
+    batches = (
+        blocks[start : start + Q6_K_BLOCKS_PER_TASK]
+        for start in range(0, blocks.shape[0], Q6_K_BLOCKS_PER_TASK)
+    )
+    if workers == 1:
+        parts = [_quantize_q6_k_blocks(batch) for batch in batches]
+    elif executor is not None:
+        parts = list(executor.map(_quantize_q6_k_blocks, batches))
+    else:
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="q6-k") as local_executor:
+            parts = list(local_executor.map(_quantize_q6_k_blocks, batches))
+    return np.concatenate(parts, axis=0)
+
+
+def quantize_q6_k(
+    arr: np.ndarray,
+    *,
+    workers: int = 1,
+    executor: Executor | None = None,
+) -> np.ndarray:
     a = _prepare(arr)
     blocks = a.reshape(-1, QK_K)
-    out = _quantize_q6_k_blocks(blocks)
+    out = _quantize_q6_k_bounded(blocks, workers=workers, executor=executor)
     return out.reshape(*a.shape[:-1], -1) if a.ndim > 1 else out.reshape(-1)
 
 
@@ -523,7 +562,12 @@ def quantize(
     q4_workers: int = 1,
     q4_executor: Executor | None = None,
 ) -> np.ndarray:
-    """Dispatch quantization by ggml type name ("Q4_K" / "Q5_K" / "Q6_K")."""
+    """Dispatch quantization by ggml type name ("Q4_K" / "Q5_K" / "Q6_K").
+
+    ``q4_workers``/``q4_executor`` bound both Q4_K and Q6_K block-batch tasks
+    (the two K-quant kernels large enough to need splitting); the parameter
+    names are kept for call-site compatibility (see ``convert._tensor_payload``).
+    """
     try:
         fn = _DISPATCH[ggml_type_name]
     except KeyError:
@@ -533,4 +577,6 @@ def quantize(
         )
     if ggml_type_name == "Q4_K":
         return quantize_q4_k(arr, workers=q4_workers, executor=q4_executor)
+    if ggml_type_name == "Q6_K":
+        return quantize_q6_k(arr, workers=q4_workers, executor=q4_executor)
     return fn(arr)

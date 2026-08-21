@@ -186,6 +186,17 @@ class _SafetensorsRaw:
         bias = ((u32 >> np.uint32(16)) & np.uint32(1)) + np.uint32(0x7FFF)
         return ((u32 + bias) >> np.uint32(16)).astype(np.uint16)
 
+    def get_raw_bytes(self, name: str) -> np.ndarray:
+        """Return the tensor's raw source bytes verbatim, as an int8 array.
+
+        No dtype interpretation or value transform: this is a byte-identical
+        passthrough (e.g. a source ``U8`` byte blob written out as GGUF ``I8``,
+        which is bit-for-bit the same storage -- gguf-py has no ``U8`` writer
+        type but does have ``I8``).
+        """
+        raw = self._read_raw(name)
+        return np.frombuffer(raw, dtype=np.int8).copy()
+
 
 # --------------------------------------------------------------------------
 # helpers
@@ -287,6 +298,10 @@ def _register_tensor_info(writer: GGUFWriter, name: str, rec: dict[str, Any]) ->
     elif ggml_type_name == "BF16":
         # non-uint8 dtype -> shape is stored as-passed (logical). raw_dtype=BF16.
         writer.add_tensor_info(name, shape_logical, np.dtype(np.uint16), nbytes, raw_dtype=qt)
+    elif ggml_type_name == "I8":
+        # 1 byte/element, no block structure: a byte-identical passthrough type
+        # (used for sidecar payloads gguf-py has no U8 writer type for).
+        writer.add_tensor_info(name, shape_logical, np.dtype(np.int8), nbytes)
     elif ggml_type_name in _KQUANT_TYPES:
         # uint8 dtype -> writer recovers logical shape from the byte shape.
         writer.add_tensor_info(name, list(byte_shape), np.dtype(np.uint8), nbytes, raw_dtype=qt)
@@ -311,6 +326,8 @@ def _tensor_payload(
         return reader.get_f32(raw_key, shape_logical)
     if ggml_type_name == "BF16":
         return reader.get_bf16_bytes(raw_key)
+    if ggml_type_name == "I8":
+        return reader.get_raw_bytes(raw_key)
     if ggml_type_name in _KQUANT_TYPES:
         f32 = reader.get_f32(raw_key, shape_logical)
         return quantize(

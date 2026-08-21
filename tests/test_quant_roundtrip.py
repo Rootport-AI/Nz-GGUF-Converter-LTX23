@@ -78,6 +78,21 @@ def test_q4_k_worker_range_is_validated(workers):
         qk.quantize_q4_k(np.zeros((1, 256), dtype=np.float32), workers=workers)
 
 
+def test_q6_k_bounded_workers_are_byte_identical():
+    """Independent Q6_K block batches (added for gemma4-ltx25's aggregate_embed
+    rows) must preserve serial bytes exactly, mirroring Q4_K's split."""
+    values = np.random.default_rng(20260821).normal(size=(2051, 256)).astype(np.float32)
+    serial = qk.quantize_q6_k(values, workers=1)
+    for workers in (2, 4, 8):
+        assert np.array_equal(serial, qk.quantize_q6_k(values, workers=workers))
+
+
+@pytest.mark.parametrize("workers", [0, 9, True, "4"])
+def test_q6_k_worker_range_is_validated(workers):
+    with pytest.raises(ValueError, match="quant workers"):
+        qk.quantize_q6_k(np.zeros((1, 256), dtype=np.float32), workers=workers)
+
+
 def _s_make_qkx2(x, w, nmax, rmin, rdelta, nstep):
     n = len(x)
     mn = x[0]; mx = x[0]; sum_w = w[0]; sum_x = _f32(sum_w * x[0])

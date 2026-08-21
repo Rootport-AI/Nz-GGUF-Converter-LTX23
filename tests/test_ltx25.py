@@ -1207,3 +1207,9 @@ def test_replace_permission_retry_and_retained_temp_report(tmp_path, monkeypatch
             source_lock=artifacts.lock,
             builder_oracle_path=artifacts.oracle,
         )
+
+
+def test_ltx25_transformer_profile_never_uses_i8():
+    """I8 (added for the separate gemma4-ltx25 profile's U8 sidecars) must not
+    change the ltx25 transformer profile's own allowed target types."""
+    assert "I8" not in ltx25._ALLOWED_TARGET_TYPES

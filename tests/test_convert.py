@@ -24,8 +24,8 @@ import gguf.quants as gq
 import numpy as np
 import pytest
 
-from converter.convert import _register_tensor_info, convert
-from converter.typemap import save_typemap
+from converter.convert import _SafetensorsRaw, _register_tensor_info, _tensor_payload, convert
+from converter.typemap import EXPECTED_TYPE_COUNTS, save_typemap
 
 # --------------------------------------------------------------------------
 # helpers
@@ -222,6 +222,57 @@ def test_register_tensor_info_uses_value_error_not_optimization_assertion():
     }
     with pytest.raises(ValueError, match="computed nbytes"):
         _register_tensor_info(writer, "fixture.weight", record)
+
+
+def test_i8_register_and_payload_are_byte_identical_passthrough(tmp_path):
+    """I8 (added for gemma4-ltx25's U8 sidecars) is a raw, block-size-1 passthrough."""
+    st = tmp_path / "u8.safetensors"
+    payload = bytes(range(1, 17))  # 16 arbitrary bytes, avoids an all-zero false positive
+    header = {"sidecar": {"dtype": "U8", "shape": [16], "data_offsets": [0, 16]}}
+    header_bytes = json.dumps(header).encode("utf-8")
+    st.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes + payload)
+
+    record = {"name": "sidecar", "ggml_type": "I8", "shape_logical": [16], "nbytes": 16}
+    writer = gguf.GGUFWriter(None, arch="ltxv")
+    nbytes = _register_tensor_info(writer, "sidecar", record)
+    assert nbytes == 16
+
+    with _SafetensorsRaw(st) as reader:
+        result = _tensor_payload(reader, "sidecar", record)
+    assert result.dtype == np.int8
+    assert result.nbytes == 16
+    assert result.tobytes() == payload
+
+
+def test_i8_output_gguf_roundtrips_byte_identical(tmp_path):
+    """End-to-end: an I8 tensor written through the shared writer reads back verbatim."""
+    st = tmp_path / "u8.safetensors"
+    payload = bytes(range(1, 17))
+    header = {"sidecar": {"dtype": "U8", "shape": [16], "data_offsets": [0, 16]}}
+    header_bytes = json.dumps(header).encode("utf-8")
+    st.write_bytes(struct.pack("<Q", len(header_bytes)) + header_bytes + payload)
+    record = {"name": "sidecar", "ggml_type": "I8", "shape_logical": [16], "nbytes": 16}
+
+    out = tmp_path / "i8.gguf"
+    with _SafetensorsRaw(st) as reader:
+        writer = gguf.GGUFWriter(str(out), arch="ltxv")
+        _register_tensor_info(writer, "sidecar", record)
+        writer.write_header_to_file()
+        writer.write_kv_data_to_file()
+        writer.write_ti_data_to_file()
+        writer.write_tensor_data(_tensor_payload(reader, "sidecar", record))
+        writer.close()
+
+    rd = gguf.GGUFReader(str(out))
+    assert len(rd.tensors) == 1
+    tensor = rd.tensors[0]
+    assert tensor.tensor_type.name == "I8"
+    assert np.asarray(tensor.data).view(np.uint8).tobytes() == payload
+
+
+def test_existing_ltx23_typemap_never_uses_i8():
+    """Regression fence: adding I8 support must not change ltx23's own type mix."""
+    assert "I8" not in EXPECTED_TYPE_COUNTS
 
 
 # --------------------------------------------------------------------------
