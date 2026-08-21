@@ -44,6 +44,7 @@ from . import convert as convert_mod
 from . import convert_vae as convert_vae_mod
 from . import download as download_mod
 from . import ltx25 as ltx25_mod
+from . import ltx25_gemma as gemma_mod
 from . import quant_kernels as quant_kernels_mod
 from . import typemap as typemap_mod
 from . import verify as verify_mod
@@ -85,10 +86,26 @@ def _ltx25_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, 
     }
 
 
-def _ltx25_only(args: argparse.Namespace, command: str) -> bool:
-    if _model(args) == "ltx25":
+def _gemma_paths(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Path]:
+    """Resolve gemma4-ltx25-only defaults without touching legacy path resolution."""
+    defaults = gemma_mod.default_paths_from_config(config, _PROJECT_ROOT)
+    return {
+        "source": _resolve_path(getattr(args, "st_path", None), defaults["source"]),
+        "inventory": _resolve_path(getattr(args, "inventory", None), defaults["inventory"]),
+        "oracle": _resolve_path(getattr(args, "builder_oracle", None), defaults["oracle"]),
+        "map": _resolve_path(getattr(args, "map", None), defaults["map"]),
+        "draft_map": defaults["draft_map"],
+        "output": _resolve_path(getattr(args, "out", None), defaults["output"]),
+    }
+
+
+_INSPECT_BUILD_MAP_MODELS = ("ltx25", "gemma4-ltx25")
+
+
+def _ltx25_only(args: argparse.Namespace, command: str, *, allowed: tuple[str, ...] = ("ltx25",)) -> bool:
+    if _model(args) in allowed:
         return True
-    print(f"{command} is available only with --model ltx25", file=sys.stderr)
+    print(f"{command} is available only with --model {'/'.join(allowed)}", file=sys.stderr)
     return False
 
 
@@ -102,12 +119,23 @@ def _require_ltx25_source_lock(config: dict[str, Any]) -> ltx25_mod.SourceLock:
     return lock
 
 
+def _require_gemma_source_lock(config: dict[str, Any]) -> ltx25_mod.SourceLock:
+    lock = gemma_mod.source_lock_from_config(config)
+    if not lock.complete:
+        raise gemma_mod.Gemma4SourceLockIncompleteError(
+            "gemma4-ltx25 source-lock-incomplete: authenticated official source SHA-256/LFS hash is "
+            "required before this command"
+        )
+    return lock
+
+
 def _quant_worker_count(args: argparse.Namespace, config: dict[str, Any]) -> int:
     requested = getattr(args, "quant_workers", None)
     if requested is not None:
         return quant_kernels_mod.validate_quant_workers(requested)
-    if _model(args) == "ltx25":
-        profile = config.get("profiles", {}).get("ltx25", {})
+    model = _model(args)
+    if model in ("ltx25", "gemma4-ltx25"):
+        profile = config.get("profiles", {}).get(model, {})
         if isinstance(profile, dict):
             return quant_kernels_mod.validate_quant_workers(profile.get("quant_workers", 4))
         return 4
@@ -125,17 +153,21 @@ def _quant_worker_argument(text: str) -> int:
 # subcommand handlers
 # --------------------------------------------------------------------------
 def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    if _model(args) == "ltx25":
-        lock = _require_ltx25_source_lock(config)
+    if _model(args) in ("ltx25", "gemma4-ltx25"):
+        is_gemma = _model(args) == "gemma4-ltx25"
+        mod = gemma_mod if is_gemma else ltx25_mod
+        lock = _require_gemma_source_lock(config) if is_gemma else _require_ltx25_source_lock(config)
         if any(
             getattr(args, name, None) is not None
             for name in ("repo_id", "filename", "expected_size", "revision", "sha256")
         ):
-            raise ltx25_mod.SourceRejectedError(
-                "ltx25 source rejected: --repo-id/--filename/--expected-size/--revision/--sha256 "
+            error_cls = gemma_mod.Gemma4SourceRejectedError if is_gemma else ltx25_mod.SourceRejectedError
+            prefix = "gemma4-ltx25" if is_gemma else "ltx25"
+            raise error_cls(
+                f"{prefix} source rejected: --repo-id/--filename/--expected-size/--revision/--sha256 "
                 "cannot override the frozen source lock"
             )
-        defaults = ltx25_mod.default_paths_from_config(config, _PROJECT_ROOT)
+        defaults = mod.default_paths_from_config(config, _PROJECT_ROOT)
         local_dir = _resolve_path(getattr(args, "local_dir", None), defaults["local_dir"])
         print(f"Repo    : {lock.repo_id}")
         print(f"Filename: {lock.filename}")
@@ -177,9 +209,9 @@ def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_extract_typemap(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    if _model(args) == "ltx25":
+    if _model(args) != "ltx23":
         print(
-            "extract-typemap is ltx23-only; LTX 2.5 uses inspect -> build-map -> convert -> self-verify.",
+            "extract-typemap is ltx23-only; ltx25/gemma4-ltx25 use inspect -> build-map -> convert -> self-verify.",
             file=sys.stderr,
         )
         return 1
@@ -254,6 +286,35 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
             quant_workers=quant_workers,
         )
         print(f"LTX 2.5 conversion/self-verify complete: {result}")
+        return 0
+
+    if _model(args) == "gemma4-ltx25":
+        lock = _require_gemma_source_lock(config)
+        quant_workers = _quant_worker_count(args, config)
+        paths = _gemma_paths(args, config)
+        if not paths["source"].is_file():
+            print(f"gemma4-ltx25 source safetensors not found: {paths['source']}", file=sys.stderr)
+            return 1
+        if not paths["map"].is_file():
+            print(
+                f"gemma4-ltx25 conversion map not found: {paths['map']} "
+                "(run inspect then build-map after the source lock is complete)",
+                file=sys.stderr,
+            )
+            return 1
+        if not paths["oracle"].is_file():
+            print(f"gemma4-ltx25 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+            return 1
+        result = gemma_mod.convert_gemma4(
+            paths["source"],
+            paths["map"],
+            paths["output"],
+            source_lock=lock,
+            force=getattr(args, "force", False),
+            builder_oracle_path=paths["oracle"],
+            quant_workers=quant_workers,
+        )
+        print(f"gemma4-ltx25 conversion/self-verify complete: {result}")
         return 0
 
     src = config["source"]
@@ -401,6 +462,40 @@ def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
         )
         return 0
 
+    if _model(args) == "gemma4-ltx25":
+        _require_gemma_source_lock(config)
+        paths = _gemma_paths(args, config)
+        if not paths["source"].is_file():
+            print(f"gemma4-ltx25 source safetensors not found: {paths['source']}", file=sys.stderr)
+            return 1
+        if not paths["inventory"].is_file():
+            print(f"gemma4-ltx25 canonical inventory not found: {paths['inventory']}", file=sys.stderr)
+            return 1
+        if not paths["map"].is_file():
+            print(f"gemma4-ltx25 conversion map not found: {paths['map']}", file=sys.stderr)
+            return 1
+        if not paths["oracle"].is_file():
+            print(f"gemma4-ltx25 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+            return 1
+        if not paths["output"].is_file():
+            print(f"gemma4-ltx25 output GGUF not found: {paths['output']}", file=sys.stderr)
+            return 1
+        manifest_path = _resolve_path(getattr(args, "manifest", None), Path(f"{paths['output']}.manifest.json"))
+        manifest = gemma_mod.verify_gemma4(
+            paths["output"],
+            paths["map"],
+            manifest_path=manifest_path,
+            inventory_path=paths["inventory"],
+            source_path=paths["source"],
+            source_lock=_require_gemma_source_lock(config),
+            builder_oracle_path=paths["oracle"],
+        )
+        print(
+            f"gemma4-ltx25 static self-verification passed: {manifest['tensor_count']} tensors, "
+            f"output SHA-256 {manifest['output_sha256']}"
+        )
+        return 0
+
     out_cfg = config["output"]
     default_out_path = _PROJECT_ROOT / out_cfg["dir"] / out_cfg["filename"]
     output_path = _resolve_path(getattr(args, "out", None), default_out_path)
@@ -422,9 +517,9 @@ def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    if _model(args) == "ltx25":
+    if _model(args) != "ltx23":
         print(
-            "all is ltx23-only; LTX 2.5 requires inspect -> build-map -> convert -> self-verify.",
+            "all is ltx23-only; ltx25/gemma4-ltx25 require inspect -> build-map -> convert -> self-verify.",
             file=sys.stderr,
         )
         return 1
@@ -466,9 +561,33 @@ def cmd_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_inspect(args: argparse.Namespace, config: dict[str, Any]) -> int:
-    """Write the canonical E3 inventory for the selected LTX 2.5 source."""
-    if not _ltx25_only(args, "inspect"):
+    """Write the canonical E3 inventory for the selected LTX 2.5/gemma4-ltx25 source."""
+    if not _ltx25_only(args, "inspect", allowed=_INSPECT_BUILD_MAP_MODELS):
         return 1
+    if _model(args) == "gemma4-ltx25":
+        lock = _require_gemma_source_lock(config)
+        paths = _gemma_paths(args, config)
+        if not paths["source"].is_file():
+            print(f"gemma4-ltx25 source safetensors not found: {paths['source']}", file=sys.stderr)
+            return 1
+        if not paths["oracle"].is_file():
+            print(f"gemma4-ltx25 builder oracle not found: {paths['oracle']}", file=sys.stderr)
+            return 1
+        inventory = gemma_mod.inspect_gemma4(
+            paths["source"],
+            source_lock=lock,
+            audit_path=paths["inventory"],
+            builder_oracle_path=paths["oracle"],
+        )
+        counts: dict[str, int] = {}
+        for record in inventory.tensors:
+            counts[record["source_dtype"]] = counts.get(record["source_dtype"], 0) + 1
+        print(
+            f"gemma4-ltx25 inventory written: {paths['inventory']} "
+            f"({len(inventory.tensors)} tensors, dtype counts {counts}, SHA-256 {inventory.inventory_sha256})"
+        )
+        return 0
+
     lock = _require_ltx25_source_lock(config)
     paths = _ltx25_paths(args, config)
     if not paths["source"].is_file():
@@ -494,8 +613,34 @@ def cmd_inspect(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 def cmd_build_map(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """Build the direct-lookup E4 map; conversion requires explicit approval."""
-    if not _ltx25_only(args, "build-map"):
+    if not _ltx25_only(args, "build-map", allowed=_INSPECT_BUILD_MAP_MODELS):
         return 1
+    if _model(args) == "gemma4-ltx25":
+        _require_gemma_source_lock(config)
+        paths = _gemma_paths(args, config)
+        map_path = _resolve_path(getattr(args, "map", None), paths["draft_map"])
+        if not paths["inventory"].is_file():
+            print(
+                f"gemma4-ltx25 inventory not found: {paths['inventory']} (run inspect first)",
+                file=sys.stderr,
+            )
+            return 1
+        if map_path.resolve() == paths["map"].resolve():
+            print(
+                f"gemma4-ltx25 approved E4 path is protected: {paths['map']} "
+                "(build-map writes a review draft; select a distinct --map path)",
+                file=sys.stderr,
+            )
+            return 1
+        policy = gemma_mod.build_policy_map(paths["inventory"], map_path)
+        print(
+            f"gemma4-ltx25 {policy['status']} conversion map written: {map_path} "
+            f"({len(policy['tensors'])} tensors, type_counts {policy['type_counts']}, "
+            f"SHA-256 {policy['map_sha256']})"
+        )
+        print("Review the draft and promote a separately reviewed checked-in E4 map before convert.")
+        return 0
+
     _require_ltx25_source_lock(config)
     paths = _ltx25_paths(args, config)
     map_path = _resolve_path(getattr(args, "map", None), paths["draft_map"])
@@ -540,9 +685,12 @@ def build_parser() -> argparse.ArgumentParser:
     def add_model_option(command_parser: argparse.ArgumentParser) -> None:
         command_parser.add_argument(
             "--model",
-            choices=("ltx23", "ltx25"),
+            choices=("ltx23", "ltx25", "gemma4-ltx25"),
             default="ltx23",
-            help="Frozen conversion profile (default: ltx23; ltx25 is explicit and gated).",
+            help=(
+                "Frozen conversion profile (default: ltx23; ltx25 and gemma4-ltx25 "
+                "are explicit and gated)."
+            ),
         )
 
     # -- download ----------------------------------------------------------
@@ -648,13 +796,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_convert.add_argument(
         "--force",
         action="store_true",
-        help="With --model ltx25, replace an existing output only after temp self-verification.",
+        help="With --model ltx25/gemma4-ltx25, replace an existing output only after temp self-verification.",
     )
     p_convert.add_argument(
         "--quant-workers",
         type=_quant_worker_argument,
         default=None,
-        help="Q4_K workers: ltx23 default 1; ltx25 profile default 4 (range: 1-8)",
+        help="Q4_K/Q6_K workers: ltx23 default 1; ltx25/gemma4-ltx25 profile default 4 (range: 1-8)",
     )
     add_model_option(p_convert)
     p_convert.set_defaults(handler=cmd_convert)

@@ -35,6 +35,30 @@ quant_workers = 4 # bounded Q4_K tasks; CLI range is 1-8 (ltx23 remains 1)
 output_dir = "output"
 output_filename = "LTX-2.5-22B-distilled-transformer.gguf"
 
+# Opt-in gemma4-ltx25 profile: the LTX-fine-tuned Gemma 4 text encoder
+# (686 tensors: 664 backbone + embed/norm + aggregate_embed + projectors +
+# vision tower + 5 U8 sidecar files). Independent of [profiles.ltx25] --
+# a different source file, no component exclusion (every tensor emits).
+[profiles."gemma4-ltx25"]
+source_repo_id = "Lightricks/LTX-2.5"
+artifact_revision = "dd53cc2cd45bbeaa3563dfb575cba3f49cf44761"
+source_filename = "text_encoders/gemma4-12b-with-proj-ltx-2.5-bf16.safetensors"
+source_expected_size = 26263860594
+source_sha256 = "1c647a94c0e902fb87f9a403cbca36a8b6d8e5867094442df1b41ae557cfd1c6"
+lfs_sha256 = "1c647a94c0e902fb87f9a403cbca36a8b6d8e5867094442df1b41ae557cfd1c6"
+git_blob_oid = "" # not captured by download-5files (sha256-only report); not required for lock completeness
+gated = "auto"
+license_id = "ltx-2-community-license-agreement"
+license_url = "https://huggingface.co/Lightricks/LTX-2.5/blob/dd53cc2cd45bbeaa3563dfb575cba3f49cf44761/LICENSE"
+source_local_dir = ".artifacts/official-ltx25" # source_filename below already carries the text_encoders/ subfolder
+inventory_path = "typemap/gemma4_ltx25_inventory.json"
+builder_oracle_path = "typemap/gemma4_ltx25_builder_oracle.json"
+map_path = "typemap/gemma4_ltx25_conversion_map.json"
+draft_map_path = "typemap/gemma4_ltx25_conversion_map.draft.json"
+quant_workers = 4 # bounded Q4_K/Q6_K tasks; CLI range is 1-8
+output_dir = "output"
+output_filename = "LTX-2.5-gemma4-12b-text-encoder-Q4_K_M.gguf"
+
 # PrunaVAED (pruned LTX-2.3 video VAE decoder) -- used by `convert-vae`.
 # The three pins below (revision / sha256 / expected_size) identify PrunaVAED v2
 # uniquely: v1 and v2 have byte-identical safetensors headers and differ only in
