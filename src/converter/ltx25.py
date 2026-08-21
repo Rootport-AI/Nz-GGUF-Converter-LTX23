@@ -54,6 +54,11 @@ INVENTORY_FORMAT = "nz-ltx25-inventory-v1"
 MANIFEST_FORMAT = "nz-ltx25-manifest-v1"
 BUILDER_ORACLE_FORMAT = "nz-ltx25-builder-oracle-v1"
 OFFICIAL_CODE_COMMIT = "400fd31054597515f47125691032c04b1c3ee24e"
+# Provenance record the backend loader reads to check which Gemma text encoder
+# this transformer was distilled against.  The official bf16 safetensors carries
+# it in ``__metadata__``; the converter passes the string through verbatim into
+# the output GGUF KV of the same name, and self-verification requires it.
+GEMMA_SOURCE_CHECKPOINT_KEY = "gemma_source_checkpoint"
 _ALLOWED_TARGET_TYPES = {"F32", "BF16", "Q4_K", "Q5_K", "Q6_K"}
 _LTX25_COMPONENT_RULES = {
     "transformer": {"classification": "emit", "component_id": "transformer", "native_prefix": ""},
@@ -327,6 +332,40 @@ def _config_from_header(header: dict[str, Any]) -> str:
     if not isinstance(parsed, dict) or not isinstance(parsed.get("transformer"), dict):
         raise SourceRejectedError("ltx25 source rejected: config must contain a top-level transformer object")
     return config_text
+
+
+def gemma_source_checkpoint_from_metadata(metadata: dict[str, Any]) -> str:
+    """Return the admitted, verbatim ``gemma_source_checkpoint`` string.
+
+    The backend loader reads ``gemma_source_checkpoint.gemma_version`` to decide
+    which Gemma text encoder pairs with this transformer, so a missing or
+    malformed value is a source rejection rather than a silently dropped KV.
+    Only a copy is parsed for validation -- the returned value is the source
+    string byte for byte, which is what the output GGUF KV must carry.
+    """
+    value = metadata.get(GEMMA_SOURCE_CHECKPOINT_KEY)
+    if not isinstance(value, str) or not value:
+        raise SourceRejectedError(
+            f"ltx25 source rejected: __metadata__.{GEMMA_SOURCE_CHECKPOINT_KEY} must be a "
+            "non-empty JSON string"
+        )
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise SourceRejectedError(
+            f"ltx25 source rejected: __metadata__.{GEMMA_SOURCE_CHECKPOINT_KEY} is not JSON ({exc})"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise SourceRejectedError(
+            f"ltx25 source rejected: __metadata__.{GEMMA_SOURCE_CHECKPOINT_KEY} must be a JSON object"
+        )
+    gemma_version = parsed.get("gemma_version")
+    if not isinstance(gemma_version, str) or not gemma_version:
+        raise SourceRejectedError(
+            f"ltx25 source rejected: __metadata__.{GEMMA_SOURCE_CHECKPOINT_KEY} lacks a non-empty "
+            "gemma_version string"
+        )
+    return value
 
 
 def _classify_tensor(raw_key: str, exclude_prefixes: dict[str, str] | None = None) -> tuple[str, str | None]:
@@ -1151,6 +1190,7 @@ def _verify_output(
     *,
     source_path: Path | None = None,
     inventory: Inventory | None = None,
+    expected_gemma_source_checkpoint: str | None = None,
 ) -> None:
     reader = GGUFReader(str(output_path))
     if len(reader.tensors) != len(records):
@@ -1180,6 +1220,17 @@ def _verify_output(
         raise Ltx25Error("ltx25 self-verify failed: output config lacks transformer object")
     if expected_config_text is not None and config_text.encode("utf-8") != expected_config_text.encode("utf-8"):
         raise Ltx25Error("ltx25 self-verify failed: output config bytes differ from source metadata")
+    if expected_gemma_source_checkpoint is not None:
+        checkpoint_field = reader.fields.get(GEMMA_SOURCE_CHECKPOINT_KEY)
+        if checkpoint_field is None:
+            raise Ltx25Error(
+                f"ltx25 self-verify failed: output lacks {GEMMA_SOURCE_CHECKPOINT_KEY} metadata"
+            )
+        if checkpoint_field.contents().encode("utf-8") != expected_gemma_source_checkpoint.encode("utf-8"):
+            raise Ltx25Error(
+                f"ltx25 self-verify failed: output {GEMMA_SOURCE_CHECKPOINT_KEY} bytes differ "
+                "from source metadata"
+            )
     for tensor in reader.tensors:
         if tensor.tensor_type.name.startswith("Q"):
             _verify_quant_tensor_finite(tensor)
@@ -1247,6 +1298,9 @@ def convert_ltx25(
         metadata = metadata_reader.metadata()
     if metadata.get("config") != inventory.config_text:
         raise InventoryMismatchError("ltx25 inventory mismatch: source config changed after header admission")
+    # Admitted before the multi-hour write, not after: a source without a usable
+    # provenance record must fail immediately rather than at self-verify.
+    gemma_source_checkpoint = gemma_source_checkpoint_from_metadata(metadata)
     required_bytes = estimate_gguf_size(records, metadata)
     _preflight_disk(output, required_bytes)
     temp = _temp_path(output)
@@ -1289,7 +1343,14 @@ def convert_ltx25(
                 writer.close()
             if q4_executor is not None:
                 q4_executor.shutdown(wait=True, cancel_futures=True)
-        _verify_output(temp, records, inventory.config_text, source_path=source, inventory=inventory)
+        _verify_output(
+            temp,
+            records,
+            inventory.config_text,
+            source_path=source,
+            inventory=inventory,
+            expected_gemma_source_checkpoint=gemma_source_checkpoint,
+        )
         _replace_with_retry(temp, output)
         committed = True
         output_sha = sha256_of_file(output)
@@ -1384,7 +1445,16 @@ def verify_ltx25(
         raise ManifestError("ltx25 manifest-missing: inventory SHA-256 does not match admitted source")
     if loaded_inventory.get("inventory_sha256") != inspected.inventory_sha256:
         raise InventoryMismatchError("ltx25 inventory mismatch: canonical inventory differs from admitted source")
-    _verify_output(output, records, inspected.config_text, source_path=Path(source_path), inventory=inspected)
+    with _SafetensorsRaw(Path(source_path)) as metadata_reader:
+        source_metadata = metadata_reader.metadata()
+    _verify_output(
+        output,
+        records,
+        inspected.config_text,
+        source_path=Path(source_path),
+        inventory=inspected,
+        expected_gemma_source_checkpoint=gemma_source_checkpoint_from_metadata(source_metadata),
+    )
     return manifest
 
 

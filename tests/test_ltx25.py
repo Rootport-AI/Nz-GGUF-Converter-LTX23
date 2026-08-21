@@ -55,6 +55,19 @@ def _fixture_lock(path) -> ltx25.SourceLock:
     )
 
 
+# Same shape as the official bf16 artifact's own __metadata__ entry.
+FIXTURE_GEMMA_SOURCE_CHECKPOINT = '{"ltx_version": "2.5.0", "gemma_version": "gemma4-12b-ltx-v1"}'
+
+
+def _fixture_metadata(config, **extra):
+    """Metadata every admissible ltx25 fixture source needs.
+
+    `gemma_source_checkpoint` is required alongside `config`: the backend loader
+    reads its `gemma_version`, so ltx25 admits no source without it.
+    """
+    return {"config": config, "gemma_source_checkpoint": FIXTURE_GEMMA_SOURCE_CHECKPOINT, **extra}
+
+
 def _source(tmp_path, *, raw_key="model.diffusion_model.transformer.weight", dtype="BF16", metadata=None):
     path = tmp_path / "fixture.safetensors"
     if dtype == "BF16":
@@ -67,7 +80,7 @@ def _source(tmp_path, *, raw_key="model.diffusion_model.transformer.weight", dty
     _write_safetensors(
         path,
         [(raw_key, dtype, raw, [1, 256] if dtype == "BF16" else [16])],
-        metadata if metadata is not None else {"config": config, "license": "fixture"},
+        metadata if metadata is not None else _fixture_metadata(config, license="fixture"),
     )
     return path, config
 
@@ -162,7 +175,7 @@ def _prepared_artifacts(tmp_path, *, tensor_count=1):
         name = f"model.diffusion_model.transformer.{index}.weight"
         tensors.append((name, "BF16", _bf16(np.full(256, index + 1, np.float32)), [1, 256]))
         shapes[f"transformer.{index}.weight"] = [1, 256]
-    _write_safetensors(source, tensors, {"config": config, "license": "fixture"})
+    _write_safetensors(source, tensors, _fixture_metadata(config, license="fixture"))
     lock = _fixture_lock(source)
     inventory = tmp_path / "inventory.json"
     oracle = tmp_path / "oracle.json"
@@ -533,7 +546,7 @@ def test_three_component_oracle_emits_bare_bundle_connectors_and_preserves_offic
                 [1, 256],
             ),
         ],
-        {"config": config},
+        _fixture_metadata(config),
     )
     oracle = tmp_path / "components-oracle.json"
     _write_component_oracle(
@@ -666,7 +679,7 @@ def test_connector_source_dtype_must_be_bf16(tmp_path):
                 [1, 256],
             ),
         ],
-        {"config": config},
+        _fixture_metadata(config),
     )
     oracle = tmp_path / "connector-oracle.json"
     _write_component_oracle(
@@ -789,7 +802,7 @@ def test_pre_bundle_4091_policy_is_rejected_after_bundle_reinspection(tmp_path):
                 [1, 256],
             ),
         ],
-        {"config": config},
+        _fixture_metadata(config),
     )
     oracle = tmp_path / "bundle-oracle.json"
     _write_component_oracle(
@@ -826,7 +839,7 @@ def test_ltx25_q4_worker_gguf_is_byte_and_structure_identical(tmp_path):
     _write_safetensors(
         source,
         [("model.diffusion_model.transformer.weight", "BF16", _bf16(values), [2051, 256])],
-        {"config": config},
+        _fixture_metadata(config),
     )
     lock = _fixture_lock(source)
     oracle = tmp_path / "oracle.json"
@@ -859,7 +872,7 @@ def test_ltx25_thread_worker_failure_closes_writer_and_cleans_temp(tmp_path, mon
     _write_safetensors(
         source,
         [("model.diffusion_model.transformer.weight", "BF16", _bf16(values), [2051, 256])],
-        {"config": config},
+        _fixture_metadata(config),
     )
     lock = _fixture_lock(source)
     oracle = tmp_path / "oracle.json"
@@ -907,7 +920,7 @@ def test_policy_map_roundtrip_temp_commit_force_and_manifest_verify(tmp_path):
         ltx25.convert_ltx25(source, map_path, output, source_lock=lock, builder_oracle_path=oracle_path)
         == output
     )
-    assert ltx25.estimate_gguf_size(policy["tensors"], {"config": config, "license": "fixture"}) == output.stat().st_size
+    assert ltx25.estimate_gguf_size(policy["tensors"], _fixture_metadata(config, license="fixture")) == output.stat().st_size
     reader = GGUFReader(str(output))
     assert reader.tensors[0].name == "transformer.weight"
     assert reader.tensors[0].tensor_type.name == "Q4_K"
@@ -1213,3 +1226,83 @@ def test_ltx25_transformer_profile_never_uses_i8():
     """I8 (added for the separate gemma4-ltx25 profile's U8 sidecars) must not
     change the ltx25 transformer profile's own allowed target types."""
     assert "I8" not in ltx25._ALLOWED_TARGET_TYPES
+
+
+# --------------------------------------------------------------------------
+# gemma_source_checkpoint KV (backend loader reads its gemma_version)
+# --------------------------------------------------------------------------
+def test_convert_writes_gemma_source_checkpoint_kv_verbatim(tmp_path):
+    """The provenance record reaches the GGUF byte for byte, and verify re-checks it."""
+    artifacts = _prepared_artifacts(tmp_path)
+    ltx25.convert_ltx25(
+        artifacts.source,
+        artifacts.policy_path,
+        artifacts.output,
+        source_lock=artifacts.lock,
+        builder_oracle_path=artifacts.oracle,
+    )
+    reader = GGUFReader(str(artifacts.output))
+    field = reader.fields[ltx25.GEMMA_SOURCE_CHECKPOINT_KEY]
+    assert field.contents().encode("utf-8") == FIXTURE_GEMMA_SOURCE_CHECKPOINT.encode("utf-8")
+    assert json.loads(field.contents())["gemma_version"] == "gemma4-12b-ltx-v1"
+    del reader  # GGUFReader owns a Windows file mapping until it is collected.
+
+    ltx25.verify_ltx25(
+        artifacts.output,
+        artifacts.policy_path,
+        inventory_path=artifacts.inventory,
+        source_path=artifacts.source,
+        source_lock=artifacts.lock,
+        builder_oracle_path=artifacts.oracle,
+    )
+
+
+@pytest.mark.parametrize(
+    "value, message",
+    [
+        (None, "non-empty JSON string"),
+        ("", "non-empty JSON string"),
+        ("{not json", "not JSON"),
+        ('"gemma4-12b-ltx-v1"', "must be a JSON object"),
+        ("{}", "gemma_version"),
+        ('{"gemma_version": ""}', "gemma_version"),
+        ('{"gemma_version": 4}', "gemma_version"),
+    ],
+)
+def test_source_without_usable_gemma_source_checkpoint_is_rejected(tmp_path, value, message):
+    """Rejection happens at admission, before any multi-hour tensor write."""
+    config = '{"transformer":{"width":256}}'
+    metadata = {"config": config}
+    if value is not None:
+        metadata["gemma_source_checkpoint"] = value
+    source, _ = _source(tmp_path, metadata=metadata)
+    lock = _fixture_lock(source)
+    oracle = tmp_path / "oracle.json"
+    inventory = tmp_path / "inventory.json"
+    policy = tmp_path / "map.json"
+    output = tmp_path / "output.gguf"
+    _write_oracle(oracle, config, {"transformer.weight": [1, 256]})
+    ltx25.inspect_ltx25(source, source_lock=lock, audit_path=inventory, builder_oracle_path=oracle)
+    _approved_map(inventory, policy)
+
+    with pytest.raises(ltx25.SourceRejectedError, match=message):
+        ltx25.convert_ltx25(source, policy, output, source_lock=lock, builder_oracle_path=oracle)
+    assert not output.exists()
+    assert not list(tmp_path.glob(".output.gguf.*.tmp"))
+
+
+def test_output_missing_gemma_source_checkpoint_fails_self_verify(tmp_path, monkeypatch):
+    """A pre-M6 writer that drops the KV must fail self-verify and never commit."""
+    from converter import metadata as metadata_mod
+
+    artifacts = _prepared_artifacts(tmp_path)
+    monkeypatch.setattr(metadata_mod, "_PROFILE_STRING_KEYS", ())
+    with pytest.raises(ltx25.Ltx25Error, match="lacks gemma_source_checkpoint"):
+        ltx25.convert_ltx25(
+            artifacts.source,
+            artifacts.policy_path,
+            artifacts.output,
+            source_lock=artifacts.lock,
+            builder_oracle_path=artifacts.oracle,
+        )
+    assert not artifacts.output.exists()

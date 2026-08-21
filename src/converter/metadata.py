@@ -36,6 +36,13 @@ _REQUIRED_KEY = "config"
 # Missing/empty entries are skipped with a warning -- processing continues.
 _OPTIONAL_STRING_KEYS = ("license", "model_version", "encrypted_wandb_properties")
 
+# Profile-specific keys copied verbatim when present.  Unlike the keys above,
+# absence is normal (LTX 2.3 sources have never carried them) and therefore is
+# not warned about.  `gemma_source_checkpoint` is the LTX 2.5 provenance record
+# the backend loader reads to check the bundled Gemma version; the LTX 2.5
+# profile additionally requires it (see ltx25._verify_output).
+_PROFILE_STRING_KEYS = ("gemma_source_checkpoint",)
+
 # Fixed KV values matching the reference GGUF (see module docstring / Docs).
 _QUANTIZATION_VERSION = 2
 _FILE_TYPE = 15
@@ -106,8 +113,9 @@ def apply_kv(writer: "gguf.GGUFWriter", meta: dict[str, Any]) -> None:
 
     Writes ``general.quantization_version`` (UINT32=2), ``general.file_type``
     (UINT32=15), and any of ``config``/``license``/``model_version``/
-    ``encrypted_wandb_properties`` present (non-empty) in ``meta`` as GGUF
-    STRING values. No other keys from ``meta`` are written.
+    ``encrypted_wandb_properties``/``gemma_source_checkpoint`` present
+    (non-empty) in ``meta`` as GGUF STRING values -- each one a verbatim
+    passthrough of the source string. No other keys from ``meta`` are written.
 
     ``general.architecture`` is intentionally not written here: it is set
     automatically by ``GGUFWriter.__init__`` from its ``arch`` constructor
@@ -117,7 +125,7 @@ def apply_kv(writer: "gguf.GGUFWriter", meta: dict[str, Any]) -> None:
     writer.add_uint32("general.quantization_version", _QUANTIZATION_VERSION)
     writer.add_uint32("general.file_type", _FILE_TYPE)
 
-    for key in (_REQUIRED_KEY, *_OPTIONAL_STRING_KEYS):
+    for key in (_REQUIRED_KEY, *_OPTIONAL_STRING_KEYS, *_PROFILE_STRING_KEYS):
         value = meta.get(key)
         if value:
             # add_string() itself no-ops on falsy values (gguf 0.18.0), this

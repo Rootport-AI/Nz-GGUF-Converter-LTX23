@@ -144,6 +144,43 @@ def test_apply_kv_skips_missing_optional_keys(tmp_path):
     assert fields["general.file_type"].contents() == 15
 
 
+def test_apply_kv_passes_gemma_source_checkpoint_through_verbatim(tmp_path):
+    """The LTX 2.5 provenance record is copied byte for byte, not reserialized."""
+    out_path = os.path.join(str(tmp_path), "out_gemma.gguf")
+    # Deliberately spaced exactly like the official artifact writes it: a
+    # reserializing implementation would collapse the spaces and fail here.
+    checkpoint = '{"ltx_version": "2.5.0", "gemma_version": "gemma4-12b-ltx-v1"}'
+    meta = {**FULL_METADATA, "gemma_source_checkpoint": checkpoint}
+
+    writer = gguf.GGUFWriter(out_path, arch="ltxv")
+    apply_kv(writer, meta)
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_ti_data_to_file()
+    writer.close()
+
+    field = gguf.GGUFReader(out_path).fields["gemma_source_checkpoint"]
+    assert field.types == [gguf.GGUFValueType.STRING]
+    assert field.contents().encode("utf-8") == checkpoint.encode("utf-8")
+
+
+def test_apply_kv_omits_gemma_source_checkpoint_for_ltx23_sources(tmp_path, caplog):
+    """LTX 2.3 sources have no such key: no KV, and no warning about it."""
+    out_path = os.path.join(str(tmp_path), "out_no_gemma.gguf")
+
+    writer = gguf.GGUFWriter(out_path, arch="ltxv")
+    with caplog.at_level("WARNING"):
+        validate_metadata(dict(FULL_METADATA))
+        apply_kv(writer, dict(FULL_METADATA))
+    writer.write_header_to_file()
+    writer.write_kv_data_to_file()
+    writer.write_ti_data_to_file()
+    writer.close()
+
+    assert "gemma_source_checkpoint" not in gguf.GGUFReader(out_path).fields
+    assert "gemma_source_checkpoint" not in "\n".join(r.message for r in caplog.records)
+
+
 # --- reference GGUF cross-check -----------------------------------------
 
 

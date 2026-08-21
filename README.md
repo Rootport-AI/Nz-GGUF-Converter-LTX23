@@ -2,13 +2,17 @@
 
 ## LTX 2.5 conversion (opt-in, source-locked)
 
-The existing commands remain LTX 2.3 by default. LTX 2.5 is selected only
-with `--model ltx25`; E1-E3 are pinned from the authenticated official source
-and the current 4,349-row E3 bundle inventory has an independently approved
-E4 map. The previous 4,091-row approved map is deliberately stale and is
-rejected by inventory hash; E5/E6 must be rerun for the replacement map. This
-does not authorize publication or backend use. It never derives a type map
-from a third-party GGUF.
+The existing commands remain LTX 2.3 by default. The LTX 2.5 transformer is
+selected only with `--model ltx25`, and the LTX-fine-tuned Gemma 4 text
+encoder only with `--model gemma4-ltx25`; the two are independent profiles
+with separate source locks and separate evidence. E1-E3 are pinned from the
+authenticated official source and the current 4,349-row E3 bundle inventory
+has an independently approved E4 map. The previous 4,091-row approved map is
+deliberately stale and is rejected by inventory hash. E5/E6 are complete for
+both profiles as of 2026-08-21 (see the Open gates section of
+`Docs/LTX25_CONVERSION_MODE_SPEC.md` for the output digests). This does not
+authorize publication or backend use. It never derives a type map from a
+third-party GGUF.
 
 The approved replacement E4 policy uses the following explicit staging
 sequence. The resulting artifact remains separate from publication and backend
@@ -18,6 +22,10 @@ acceptance:
 run.bat inspect --model ltx25
 run.bat convert --model ltx25
 run.bat self-verify --model ltx25
+
+run.bat inspect --model gemma4-ltx25
+run.bat convert --model gemma4-ltx25
+run.bat self-verify --model gemma4-ltx25
 ```
 
 `all` and `extract-typemap` are intentionally LTX 2.3-only. LTX 2.5 emits
@@ -37,7 +45,10 @@ LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
 
 このリポジトリは、Nz-LTX23（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
 
-1. **GGUF変換**（このツールの出発点）— LTX 2.3のファインチューンモデル「Sulphur 2 base」のsafetensors（PyTorchの重みファイル形式、約43GB）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）形式に変換します。
+1. **GGUF変換**（このツールの出発点）— safetensors（PyTorchの重みファイル形式）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）へ変換します。変換の系統は3つあり、`--model` で選びます。
+   - `ltx23`（既定）— LTX 2.3のファインチューンモデル「Sulphur 2 base」（約43GB）を約17.8GBへ。
+   - `ltx25` — LTX 2.5本体の映像生成モデル（約42GB）を約14.7GBへ。
+   - `gemma4-ltx25` — LTX 2.5が使う文章理解モデル「Gemma 4」（約26GB）を約9.2GBへ。
 2. **PrunaVAED変換**（`convert-vae`）— 枝刈り（pruning。寄与の小さいチャンネルを削ること）を施した映像VAEデコーダ「PrunaVAED」の配布ファイルから、デコーダ部分だけを取り出して約690MBのsafetensorsに作り直します。バックエンドがそのまま読み込める形（キー名の付け替え済み）で出力します。
 
 変換後のGGUFは、既存のバックエンド（Nz-LTX23-backend）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じ構造・型マップに揃えることで、バックエンド側の推論コードを変更せずに差し替えられるようにします。
