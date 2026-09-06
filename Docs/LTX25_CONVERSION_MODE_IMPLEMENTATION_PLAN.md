@@ -99,6 +99,6 @@ Large authenticated conversion runs only in its gated job: E1 then E2/E3 then in
 
 ## Separate backend stage and rollback
 
-Only after converter E1-E6 acceptance, a separate backend repository plan may implement LTX 2.5 construction and run one representative fixed-seed end-to-end case. That stage checks 16 GB per-layer behavior; no broad benchmark campaign is required. The existing backend raw-key/no-remap behavior at ../Nz-LTX23-backend/engine/gguf/quant_service.py:617-621 is a static handoff constraint, not proof of LTX 2.5 compatibility.
+Only after converter E1-E6 acceptance, a separate backend repository plan may implement LTX 2.5 construction and run one representative fixed-seed end-to-end case. That stage checks 16 GB per-layer behavior; no broad benchmark campaign is required. The existing backend raw-key/no-remap behavior at ../Nz-Videomni/engine/gguf/quant_service.py:617-621 is a static handoff constraint, not proof of LTX 2.5 compatibility.
 
 Rollback means disable ltx25. Do not move, remove, quarantine, or relabel user outputs. Re-pin, regenerate E2-E6, and re-gate any corrected artifact.

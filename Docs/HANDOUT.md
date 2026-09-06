@@ -53,19 +53,19 @@ run.bat verify             生成したGGUFの構造が参照GGUFと一致する
 ### 1-4. 変換したGGUFとLoRAの配置と選択
 
 出力GGUF（`output\*.gguf`）は、このプロジェクトのフォルダに置いてあるだけではバック
-エンド（Nz-LTX23-backend）から見えません。バックエンドで使うには次の手順が必要です。
+エンド（Nz-Videomni）から見えません。バックエンドで使うには次の手順が必要です。
 
-1. `output\*.gguf`を、バックエンドの`Nz-LTX23-backend\models\ltx-2.3-gguf\`配下に
+1. `output\*.gguf`を、バックエンドの`Nz-Videomni\models\LTX23\Weights\`配下に
    **新しいサブフォルダを作って**コピーします（既存の`LTX-2.3-distilled-1.1\`と
    兄弟フォルダにし、既存の参照GGUFは上書きしないでください）。例:
-   `models\ltx-2.3-gguf\Sulphur-2-base-distil-1.0\Sulphur-2-base-distil-Q4_K_M.gguf`。
-2. バックエンドは`models\ltx-2.3-gguf\`配下を**再帰的に**スキャンして`.gguf`ファイルを
+   `models\LTX23\Weights\Sulphur-2-base-distil-1.0\Sulphur-2-base-distil-Q4_K_M.gguf`。
+2. バックエンドは`models\LTX23\Weights\`配下を**再帰的に**スキャンして`.gguf`ファイルを
    自動登録します（登録名＝ファイル名から拡張子を除いたもの）。コピーするだけで
    反映され、`config.yaml`の編集は不要です。
 3. バックエンド起動後、UIの「Models」設定またはAPI `POST /pipeline/load`でこの
    登録名を選べば読み込まれます。
 
-`safetensors\distill_loras\`に取得した蒸留LoRAも、`Nz-LTX23-backend\models\loras\`へ
+`safetensors\distill_loras\`に取得した蒸留LoRAも、`Nz-Videomni\models\LTX23\StyleLoRA\`へ
 コピーするだけで自動認識されます。生成時はAPIの`loras:[{name, strength}]`、または
 Gradio UIのプロンプト内`<lora:名前:強度>`記法で指定します（同じく設定ファイルの編集は
 不要）。
@@ -126,7 +126,7 @@ Q6_Kで72.7dBと非常に高く、品質そのものに問題はありません�
 
 1. 環境変数`NZKONV_PYTHON`（明示的に指定した場合）
 2. `py -3.12` → `py -3.11` → `py -3.13`（Pythonランチャー経由）
-3. 上記がどれも見つからない場合、**バックエンド（Nz-LTX23-backend）に同梱されて
+3. 上記がどれも見つからない場合、**バックエンド（Nz-Videomni）に同梱されて
    いるCPython 3.12を読み取り専用で借用**します。
 
 3のフォールバックが使われた場合、作成される`.venv`は内部的にバックエンドの
@@ -138,7 +138,10 @@ Q6_Kで72.7dBと非常に高く、品質そのものに問題はありません�
 
 今回の環境では実際に3のフォールバックが使われており、`.venv\pyvenv.cfg`を見ると
 `home = S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\.python\cpython-3.12.9-windows-x86_64-none`
-と、バックエンド同梱のCPythonを指していることが確認できます。つまり**この
+と、バックエンド同梱のCPythonを指していることが確認できます（この記録は2026-08-19の
+バックエンド改名前のもので、`Nz-LTX23-backend`は現在の`Nz-Videomni`を指します。改名後に
+`.venv`を作り直した現在は、同じ`pyvenv.cfg`の`home`は`Nz-Videomni\.python\...`を指して
+います）。つまり**この
 プロジェクトの`.venv`は、現状すでにバックエンドフォルダに依存しています**。
 バックエンドを移動・削除する予定がある場合は、事前に`NZKONV_PYTHON`環境変数か
 `py`ランチャーで独立したPython 3.11以上を用意し、`.venv`を作り直しておくことを
@@ -159,7 +162,7 @@ Q6_Kで72.7dBと非常に高く、品質そのものに問題はありません�
 ### `run.bat verify`が失敗する（FAILが出る）
 
 `config.toml`の`[reference].gguf_path`が指しているバックエンド側の参照GGUF
-（`Nz-LTX23-backend\models\ltx-2.3-gguf\LTX-2.3-distilled-1.1\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf`）
+（`Nz-Videomni\models\LTX23\Weights\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf`）
 が存在し、破損していないか確認してください。それでも失敗する場合は、
 どの項目が`FAIL`になったかを確認し（`tensor_count`/`tensor_names_order`/
 `tensor_types_shapes`/`kv_keys`など）、`src/converter/verify.py`のdocstringで

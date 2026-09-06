@@ -43,7 +43,7 @@ Q4_K uses bounded 1024-block tasks. LTX 2.3 keeps one worker by default;
 LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
 `--quant-workers`). This changes neither the float32 kernel nor output bytes.
 
-このリポジトリは、Nz-LTX23（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
+このリポジトリは、Nz-Videomni（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
 
 1. **GGUF変換**（このツールの出発点）— safetensors（PyTorchの重みファイル形式）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）へ変換します。変換の系統は3つあり、`--model` で選びます。
    - `ltx23`（既定）— LTX 2.3のファインチューンモデル「Sulphur 2 base」（約43GB）を約17.8GBへ。
@@ -51,7 +51,7 @@ LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
    - `gemma4-ltx25` — LTX 2.5が使う文章理解モデル「Gemma 4」（約26GB）を約9.2GBへ。
 2. **PrunaVAED変換**（`convert-vae`）— 枝刈り（pruning。寄与の小さいチャンネルを削ること）を施した映像VAEデコーダ「PrunaVAED」の配布ファイルから、デコーダ部分だけを取り出して約690MBのsafetensorsに作り直します。バックエンドがそのまま読み込める形（キー名の付け替え済み）で出力します。
 
-変換後のGGUFは、既存のバックエンド（Nz-LTX23-backend）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じ構造・型マップに揃えることで、バックエンド側の推論コードを変更せずに差し替えられるようにします。
+変換後のGGUFは、既存のバックエンド（Nz-Videomni）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じ構造・型マップに揃えることで、バックエンド側の推論コードを変更せずに差し替えられるようにします。
 
 ## セットアップ
 
@@ -59,7 +59,7 @@ LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
    - このディレクトリ内に `.venv` という名前のPython仮想環境を作成します（ホスト側のPython環境は変更しません）。
    - 既に `.venv` がある場合は作成をスキップし、依存パッケージのインストールのみ行います。
    - `requirements.txt` に記載された依存パッケージ（gguf, numpy, safetensors, huggingface_hub, tqdm, pytest）をインストールします。torch（PyTorch）はインストールしません。変換処理はCPU上でsafetensors/numpy/ggufライブラリのみを使って行うためです。
-2. 基となるPythonインタープリタ（Python 3.11以上が必要）は次の優先順位で自動選択されます: 環境変数 `NZKONV_PYTHON`（Python 3.11以上の実行ファイルのパスを指定）→ `py -3.12` → `py -3.11` → `py -3.13` → バックエンド（Nz-LTX23-backend）に同梱されているCPython 3.12（読み取り専用で借用）。
+2. 基となるPythonインタープリタ（Python 3.11以上が必要）は次の優先順位で自動選択されます: 環境変数 `NZKONV_PYTHON`（Python 3.11以上の実行ファイルのパスを指定）→ `py -3.12` → `py -3.11` → `py -3.13` → バックエンド（Nz-Videomni）に同梱されているCPython 3.12（読み取り専用で借用）。
 3. 注意: バックエンド同梱のCPythonが選ばれた場合、作成される `.venv` はバックエンドの `.python` ディレクトリを参照します（`.venv\pyvenv.cfg` に記録されます）。バックエンドのフォルダを移動・削除するとこの仮想環境は壊れるため、その場合は `.venv` を削除して `setup.bat` を再実行してください。
 
 ## 使い方
@@ -134,17 +134,17 @@ Docs/          設計メモ等のドキュメント
 ## 変換したGGUFの配置と選択
 
 `run.bat convert` の出力（`output\*.gguf`）は、このツールのフォルダに置いてあるだけでは
-バックエンド（Nz-LTX23-backend）から認識されません。バックエンドに反映するには以下の
+バックエンド（Nz-Videomni）から認識されません。バックエンドに反映するには以下の
 手順を行ってください。
 
-1. `output\*.gguf` を、バックエンドの `Nz-LTX23-backend\models\ltx-2.3-gguf\` の
-   **直下**へコピーします（例: `models\ltx-2.3-gguf\Sulphur-2-base-distil-Q4_K_M.gguf`）。
+1. `output\*.gguf` を、バックエンドの `Nz-Videomni\models\LTX23\Weights\` の
+   **直下**へコピーします（例: `models\LTX23\Weights\Sulphur-2-base-distil-Q4_K_M.gguf`）。
    既存の参照GGUF `LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf` と同じ階層に、別のファイル名で
    並べる形になります。**同名でコピーして上書きしないでください。**
    ※かつては `LTX-2.3-distilled-1.1\` のようなサブフォルダを作って置く手順でしたが、
    この入れ子構造は2026-07-26に廃止しました（再ホスト先のリポジトリが最初から直下の構造で
    持つようになり、インストーラ側の平坦化処理も削除済み）。現在の正しい配置は直下です。
-2. バックエンドは `models\ltx-2.3-gguf\` 配下を**再帰的に**スキャンして`.gguf`ファイルを
+2. バックエンドは `models\LTX23\Weights\` 配下を**再帰的に**スキャンして`.gguf`ファイルを
    自動登録する設計なので、サブフォルダに入れても認識自体はされます。ただし既定パスと
    ドキュメントは直下を前提にしているため、直下に置いてください。登録名はファイル名
    （拡張子を除いた部分）がそのまま使われ、`config.yaml`の編集は不要です。
@@ -152,7 +152,7 @@ Docs/          設計メモ等のドキュメント
    `POST /pipeline/load` でこの登録名を選べば、そのGGUFが読み込まれます。
 
 このツールで取得した蒸留LoRA（`safetensors\distill_loras\` 配下）も、同様に
-`Nz-LTX23-backend\models\loras\` へコピーするだけでバックエンドが自動認識します。
+`Nz-Videomni\models\LTX23\StyleLoRA\` へコピーするだけでバックエンドが自動認識します。
 生成時はAPIの `loras:[{name, strength}]`、またはGradio UIのプロンプト内
 `<lora:名前:強度>` という記法で指定します（こちらも設定ファイルの編集は不要です）。
 

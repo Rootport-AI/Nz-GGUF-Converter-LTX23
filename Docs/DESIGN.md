@@ -13,7 +13,7 @@ GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量
 
 ## 1. 背景と目的
 
-既存のバックエンド（Nz-LTX23-backend）は、LTX-2.3の公式配布モデルを変換した
+既存のバックエンド（Nz-Videomni）は、LTX-2.3の公式配布モデルを変換した
 `LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf`（以下「参照GGUF」）を読み込んで動画生成
 （DiT、動画生成の本体となるトランスフォーマー、を使った拡散モデルの推論）を行って
 います。オーナーが使いたいのはSulphur-2-baseというファインチューン版で、こちらは
@@ -99,7 +99,7 @@ gguf-py・safetensorsだけで完結します。torchは数GBの追加インス�
 CUDA関連の初期化コストもあるため、変換ツール単体では意図的に導入していません
 （`setup.bat`のコメント、`requirements.txt`参照）。E2E検証（段階A、後述）で
 バックエンドのdequantコードを借用する際だけ、バックエンド同梱のvenv
-（`Nz-LTX23-backend\.venv-engine`、torchインストール済み）を間借りします。
+（`Nz-Videomni\.venv-engine`、torchインストール済み）を間借りします。
 
 ## 3. モジュール構成
 
@@ -140,7 +140,7 @@ src/converter/
 safetensors/sulphur_distil_bf16.safetensors (約43GB, bf16)
 
 [参照GGUF] ──typemap.py(extract_typemap)──▶ typemap/ltx23_q4km_typemap.json
- (Nz-LTX23-backend                         (テンソル名→GGML型・形状のJSON、
+ (Nz-Videomni                              (テンソル名→GGML型・形状のJSON、
   同梱の既存ファイル)                        4444テンソル分、コミット対象)
 
 safetensors + typemap ──convert.py(convert)──▶ output/Sulphur-2-base-distil-Q4_K_M.gguf

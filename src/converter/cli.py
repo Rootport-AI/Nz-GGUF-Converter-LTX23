@@ -1,4 +1,4 @@
-"""Command-line interface for the Nz-LTX23 weight-conversion toolbox.
+"""Command-line interface for the Nz-Videomni weight-conversion toolbox.
 
 Wires together the pipeline stages -- each implemented in its own module and
 unchanged here -- into a single ``converter`` CLI with subcommands.
@@ -673,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="converter",
         description=(
-            "Nz-LTX23 weight-conversion toolbox: the Sulphur-2 (LTX-2.3 fine-tune) "
+            "Nz-Videomni weight-conversion toolbox: the Sulphur-2 (LTX-2.3 fine-tune) "
             "safetensors -> GGUF (Q4_K_M) pipeline, plus the standalone PrunaVAED "
             "video-VAE decoder conversion. All subcommands fall back to config.toml "
             "for their default paths; pass options to override them. "

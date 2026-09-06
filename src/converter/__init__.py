@@ -1,4 +1,4 @@
-"""Nz-LTX23 weight-conversion toolbox.
+"""Nz-Videomni weight-conversion toolbox.
 
 Started life as a Sulphur-2 -> GGUF (Q4_K_M) converter and now also hosts the
 PrunaVAED decoder conversion (``convert-vae``). See README.md.

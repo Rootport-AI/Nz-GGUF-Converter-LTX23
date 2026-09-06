@@ -71,10 +71,10 @@ The adjacent backend is a static consumer handoff only. It is not the LTX 2.5 or
 
 | Backend observation | Evidence |
 | --- | --- |
-| Per-layer mode stores quantized raw bytes and dequantizes each Linear weight during forward. | ../Nz-LTX23-backend/engine/gguf/quant_service.py:729-734 |
-| It reverses GGUF shape; F32/F16/BF16 are floats and other supported types remain packed bytes. | ../Nz-LTX23-backend/engine/gguf/quant_service.py:582-615 |
-| Active per-layer load applies no remap, so emitted raw names must be exact. | ../Nz-LTX23-backend/engine/gguf/quant_service.py:617-621 |
-| It reads embedded config but its current construction capability is not evidence of LTX 2.5 support. | ../Nz-LTX23-backend/engine/gguf/quant_service.py:536-561 |
+| Per-layer mode stores quantized raw bytes and dequantizes each Linear weight during forward. | ../Nz-Videomni/engine/gguf/quant_service.py:729-734 |
+| It reverses GGUF shape; F32/F16/BF16 are floats and other supported types remain packed bytes. | ../Nz-Videomni/engine/gguf/quant_service.py:582-615 |
+| Active per-layer load applies no remap, so emitted raw names must be exact. | ../Nz-Videomni/engine/gguf/quant_service.py:617-621 |
+| It reads embedded config but its current construction capability is not evidence of LTX 2.5 support. | ../Nz-Videomni/engine/gguf/quant_service.py:536-561 |
 
 ## Profile, CLI, and scope boundary
 
