@@ -5,7 +5,12 @@ expected_size = 46139885414
 local_dir = "safetensors"
 
 [reference]
-gguf_path = 'S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models\ltx-2.3-gguf\LTX-2.3-distilled-1.1\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf'
+# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
+# directories (the Rootport-AI GitHub org layout). Override with --reference
+# if your layout differs; extract-typemap/convert/verify already report
+# "not found" and stop gracefully when this path does not resolve (e.g. a
+# standalone clone without the backend checked out alongside it).
+gguf_path = "../Nz-LTX23-backend/models/ltx-2.3-gguf/LTX-2.3-distilled-1.1/LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
 typemap_path = "typemap/ltx23_q4km_typemap.json"
 
 [output]
@@ -73,9 +78,13 @@ local_dir = "safetensors/prunavaed"
 # The output must NOT contain the substring "video": the backend's model
 # registry auto-registers every `video`-named .safetensors under its vae/
 # directory as a selectable full video VAE, and a decoder-only file there would
-# break the encoder side (PRUNAVAED_WORKORDER.md §4.1).
+# break the encoder side
+# (https://github.com/Rootport-AI/Nz-Videomni/blob/main/Docs/PRUNAVAED_WORKORDER.md
+# §4.1).
 out_dir = "output"
 out_filename = "PrunaVAED-decoder-bf16.safetensors"
 # Optional: the stock video VAE, used only for the latent-statistics
-# cross-check (self-verification item 6). Skipped when absent.
-reference_vae_path = 'S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models\ltx-2.3-components\vae\LTX23_video_vae_bf16.safetensors'
+# cross-check (self-verification item 6). Skipped when absent. Default assumes
+# this repo and Nz-LTX23-backend are cloned as sibling directories -- see the
+# note on [reference].gguf_path above.
+reference_vae_path = "../Nz-LTX23-backend/models/ltx-2.3-components/vae/LTX23_video_vae_bf16.safetensors"

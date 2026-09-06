@@ -596,3 +596,8 @@ identical: True
 なお、後続のゲート（G2以降＝バックエンド側の読み込み・数値の健全性・速度の採否
 判定）は本リポジトリの範囲外で、バックエンド側の `Docs/VERIFICATION_LOG.md` §52 に
 記録されます。
+
+（2026-09-07追記: バックエンド（Nz-Videomni、旧Nz-LTX23-backend）が公開された
+ため、この記録は
+`https://github.com/Rootport-AI/Nz-Videomni/blob/main/Docs/VERIFICATION_LOG.md`
+の §52 として参照できます。）

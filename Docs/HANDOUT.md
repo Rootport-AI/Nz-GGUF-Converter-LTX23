@@ -172,10 +172,12 @@ Q6_Kで72.7dBと非常に高く、品質そのものに問題はありません�
 venvで実行してください**（このプロジェクトの`.venv`ではありません）。
 
 ```
-S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\.venv-engine\Scripts\python.exe scripts\e2e_load_check.py
+..\Nz-LTX23-backend\.venv-engine\Scripts\python.exe scripts\e2e_load_check.py
 ```
 
-プロジェクトのルート（`Nz-GGUF-Converter-LTX23`）で実行してください。
+（このリポジトリとNz-LTX23-backendが兄弟ディレクトリとして並んでいる前提の相対
+パスです。レイアウトが異なる場合はバックエンドのvenv実体のパスに読み替えて
+ください。）プロジェクトのルート（`Nz-GGUF-Converter-LTX23`）で実行してください。
 `--max-tensors N`オプションを付けると、最初のN個のテンソルだけで動作確認する
 簡易実行ができます。
 

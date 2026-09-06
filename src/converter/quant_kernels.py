@@ -12,6 +12,11 @@ reference C implementations in llama.cpp:
 Source: https://raw.githubusercontent.com/ggml-org/llama.cpp/master/ggml/src/ggml-quants.c
 Ported: 2026-07-10 (llama.cpp master).  imatrix-free reference variant.
 
+Portions derived from ggml-org/llama.cpp (MIT License, Copyright (c) 2023-2024
+The ggml authors). See the repository's top-level ``LICENSE`` file for this
+project's own license (Apache License 2.0); the MIT-licensed upstream algorithm
+this module ports is unaffected by that choice.
+
 Design notes
 ------------
 * All arithmetic is done in float32 to mirror the C ``float`` code paths.  The

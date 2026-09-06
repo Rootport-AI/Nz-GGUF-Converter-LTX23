@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -38,12 +39,20 @@ from gguf.constants import GGMLQuantizationType as GT
 from converter import quant_kernels as qk
 
 
-REF_GGUF = os.environ.get(
-    "REF_GGUF",
-    r"S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models"
-    r"\ltx-2.3-gguf\LTX-2.3-distilled-1.1"
-    r"\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf",
+# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
+# directories (the Rootport-AI GitHub org layout); override with the REF_GGUF
+# environment variable if your layout differs or the backend is unavailable.
+# Absent either way, every check below that needs it is skipped (see
+# `skip_ref` / `ref_missing`).
+_DEFAULT_REF_GGUF = str(
+    Path(__file__).resolve().parents[2]
+    / "Nz-LTX23-backend"
+    / "models"
+    / "ltx-2.3-gguf"
+    / "LTX-2.3-distilled-1.1"
+    / "LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
 )
+REF_GGUF = os.environ.get("REF_GGUF", _DEFAULT_REF_GGUF)
 
 TYPE_ID = {12: "Q4_K", 13: "Q5_K", 14: "Q6_K"}
 GT_OF = {"Q4_K": GT.Q4_K, "Q5_K": GT.Q5_K, "Q6_K": GT.Q6_K}

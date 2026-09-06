@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import gguf
 import numpy as np
@@ -12,9 +13,20 @@ from safetensors.numpy import save_file
 
 from converter.metadata import apply_kv, read_st_metadata, validate_metadata
 
-REFERENCE_GGUF = (
-    r"S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend\models\ltx-2.3-gguf"
-    r"\LTX-2.3-distilled-1.1\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
+# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
+# directories (the Rootport-AI GitHub org layout); override with the REF_GGUF
+# environment variable if your layout differs or the backend is unavailable.
+# The reference-GGUF test below is skipped when this path does not resolve.
+REFERENCE_GGUF = os.environ.get(
+    "REF_GGUF",
+    str(
+        Path(__file__).resolve().parents[2]
+        / "Nz-LTX23-backend"
+        / "models"
+        / "ltx-2.3-gguf"
+        / "LTX-2.3-distilled-1.1"
+        / "LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
+    ),
 )
 
 FULL_METADATA = {

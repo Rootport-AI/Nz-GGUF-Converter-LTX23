@@ -56,21 +56,31 @@ backend's torch dequant kernels are a faithful, bit-matching port of
 ``gguf.quants`` (same reference oracle), so this fallback is numerically
 equivalent -- it is not a weaker check, just a different call path.
 
-Usage (must be run with the BACKEND's venv, not this project's .venv):
+Usage (must be run with the BACKEND's venv, not this project's .venv; run from
+this project's root, e.g. assuming this repo and Nz-LTX23-backend are cloned
+as sibling directories):
 
-    S:\\...\\Nz-LTX23-backend\\.venv-engine\\Scripts\\python.exe scripts\\e2e_load_check.py
+    ..\\Nz-LTX23-backend\\.venv-engine\\Scripts\\python.exe scripts\\e2e_load_check.py
 
 Optional arguments:
     --gguf PATH       override the output GGUF path (default: config.toml's
                       [output] dir/filename, resolved relative to this
                       project's root)
     --max-tensors N   stop after N tensors (for a quick smoke test)
+
+The backend root used to locate ``engine.gguf.loader_service`` /
+``engine.gguf.quant_service`` (see ``_try_import_backend`` below) defaults to
+a sibling ``Nz-LTX23-backend`` directory next to this project; override with
+the ``NZKONV_BACKEND_ROOT`` environment variable if your layout differs. If
+the backend cannot be found or imported, this falls back to the
+``gguf.quants`` mode described above -- it is not a fatal error.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -78,7 +88,10 @@ import tomllib
 from pathlib import Path
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_BACKEND_ROOT = Path(r"S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-LTX23-backend")
+_BACKEND_ROOT = Path(
+    os.environ.get("NZKONV_BACKEND_ROOT")
+    or (_PROJECT_ROOT.parent / "Nz-LTX23-backend")
+)
 
 
 # --------------------------------------------------------------------------

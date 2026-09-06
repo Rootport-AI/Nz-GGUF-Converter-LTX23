@@ -167,3 +167,14 @@ Docs/          設計メモ等のドキュメント
 - Sulphur 2 base: 変換したGGUFは `https://huggingface.co/Rootport/Nz-Sulphur2` から
   ダウンロードできます。
 - 10Eros: 変換に成功しています。
+
+## ライセンス
+
+- 本リポジトリ自体は Apache License 2.0 で公開しています。全文は `LICENSE` を
+  参照してください。
+- `src/converter/quant_kernels.py` の一部（K-quant量子化アルゴリズムの探索処理）は、
+  llama.cpp（MIT License）のC実装を移植したものです。詳細はファイル冒頭のコメントを
+  参照してください。
+- `src/converter/data/LTX-2-Community-License.txt` は、変換後のGGUFファイルの
+  メタデータへ埋め込むためのライセンス全文データであり、**本ツール自体のライセンス
+  ではありません**（本ツール自体のライセンスはApache License 2.0です）。
