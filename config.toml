@@ -5,12 +5,12 @@ expected_size = 46139885414
 local_dir = "safetensors"
 
 [reference]
-# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
-# directories (the Rootport-AI GitHub org layout). Override with --reference
-# if your layout differs; extract-typemap/convert/verify already report
-# "not found" and stop gracefully when this path does not resolve (e.g. a
-# standalone clone without the backend checked out alongside it).
-gguf_path = "../Nz-LTX23-backend/models/ltx-2.3-gguf/LTX-2.3-distilled-1.1/LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
+# Default assumes this repo and Nz-Videomni (the backend) are cloned as
+# sibling directories (the Rootport-AI GitHub org layout). Override with
+# --reference if your layout differs; extract-typemap/convert/verify already
+# report "not found" and stop gracefully when this path does not resolve
+# (e.g. a standalone clone without the backend checked out alongside it).
+gguf_path = "../Nz-Videomni/models/LTX23/Weights/LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
 typemap_path = "typemap/ltx23_q4km_typemap.json"
 
 [output]
@@ -85,6 +85,6 @@ out_dir = "output"
 out_filename = "PrunaVAED-decoder-bf16.safetensors"
 # Optional: the stock video VAE, used only for the latent-statistics
 # cross-check (self-verification item 6). Skipped when absent. Default assumes
-# this repo and Nz-LTX23-backend are cloned as sibling directories -- see the
+# this repo and Nz-Videomni are cloned as sibling directories -- see the
 # note on [reference].gguf_path above.
-reference_vae_path = "../Nz-LTX23-backend/models/ltx-2.3-components/vae/LTX23_video_vae_bf16.safetensors"
+reference_vae_path = "../Nz-Videomni/models/LTX23/VAE/LTX23_video_vae_bf16.safetensors"

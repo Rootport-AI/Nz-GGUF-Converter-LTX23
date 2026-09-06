@@ -28,18 +28,19 @@ import pytest
 
 from converter.verify import _load_config, resolve_paths, verify_structure
 
-# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
-# directories (the Rootport-AI GitHub org layout); override with the REF_GGUF
-# environment variable if your layout differs or the backend is unavailable.
-# The reference-GGUF tests below are skipped when this path does not resolve.
+# Default assumes this repo and Nz-Videomni (the backend) are cloned as
+# sibling directories (the Rootport-AI GitHub org layout); override with the
+# REF_GGUF environment variable if your layout differs or the backend is
+# unavailable. The reference-GGUF tests below are skipped when this path does
+# not resolve.
 REFERENCE_GGUF = os.environ.get(
     "REF_GGUF",
     str(
         Path(__file__).resolve().parents[2]
-        / "Nz-LTX23-backend"
+        / "Nz-Videomni"
         / "models"
-        / "ltx-2.3-gguf"
-        / "LTX-2.3-distilled-1.1"
+        / "LTX23"
+        / "Weights"
         / "LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
     ),
 )

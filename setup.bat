@@ -7,10 +7,11 @@ REM Priority: 1) NZKONV_PYTHON env var  2) py -3.12  3) py -3.11, py -3.13
 REM           4) backend-bundled CPython (read-only borrow)  5) error
 
 set "BASE_PY="
-REM Assumes this repo and Nz-LTX23-backend are cloned as sibling directories
-REM (the Rootport-AI GitHub org layout). If the backend is not present here,
-REM the "if not exist" check below just falls through to :no_python.
-set "BACKEND_PYROOT=%~dp0..\Nz-LTX23-backend\.python"
+REM Assumes this repo and Nz-Videomni (the backend) are cloned as sibling
+REM directories (the Rootport-AI GitHub org layout). If the backend is not
+REM present here, the "if not exist" check below just falls through to
+REM :no_python.
+set "BACKEND_PYROOT=%~dp0..\Nz-Videomni\.python"
 
 if not defined NZKONV_PYTHON goto :try_launcher
 if not exist "%NZKONV_PYTHON%" (

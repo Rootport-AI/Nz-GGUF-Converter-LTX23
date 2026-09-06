@@ -2,11 +2,11 @@
 AviUtl2 backend's own loader/dequant code paths.
 
 This script is intentionally self-contained and READ-ONLY with respect to the
-backend directory (``Nz-LTX23-backend``): it never edits or writes any file
+backend directory (``Nz-Videomni``): it never edits or writes any file
 under that tree. It only *imports* two backend modules --
 ``engine.gguf.loader_service`` and ``engine.gguf.quant_service`` -- by adding
 the backend root to ``sys.path``, and it must be *run* with the backend's own
-venv interpreter (``Nz-LTX23-backend\\.venv-engine\\Scripts\\python.exe``)
+venv interpreter (``Nz-Videomni\\.venv-engine\\Scripts\\python.exe``)
 because that venv is the one with ``torch`` installed.
 
 What it checks (streaming, one tensor at a time -- see the RAM-safety note
@@ -57,10 +57,10 @@ backend's torch dequant kernels are a faithful, bit-matching port of
 equivalent -- it is not a weaker check, just a different call path.
 
 Usage (must be run with the BACKEND's venv, not this project's .venv; run from
-this project's root, e.g. assuming this repo and Nz-LTX23-backend are cloned
+this project's root, e.g. assuming this repo and Nz-Videomni are cloned
 as sibling directories):
 
-    ..\\Nz-LTX23-backend\\.venv-engine\\Scripts\\python.exe scripts\\e2e_load_check.py
+    ..\\Nz-Videomni\\.venv-engine\\Scripts\\python.exe scripts\\e2e_load_check.py
 
 Optional arguments:
     --gguf PATH       override the output GGUF path (default: config.toml's
@@ -70,7 +70,7 @@ Optional arguments:
 
 The backend root used to locate ``engine.gguf.loader_service`` /
 ``engine.gguf.quant_service`` (see ``_try_import_backend`` below) defaults to
-a sibling ``Nz-LTX23-backend`` directory next to this project; override with
+a sibling ``Nz-Videomni`` directory next to this project; override with
 the ``NZKONV_BACKEND_ROOT`` environment variable if your layout differs. If
 the backend cannot be found or imported, this falls back to the
 ``gguf.quants`` mode described above -- it is not a fatal error.
@@ -90,7 +90,7 @@ from pathlib import Path
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _BACKEND_ROOT = Path(
     os.environ.get("NZKONV_BACKEND_ROOT")
-    or (_PROJECT_ROOT.parent / "Nz-LTX23-backend")
+    or (_PROJECT_ROOT.parent / "Nz-Videomni")
 )
 
 

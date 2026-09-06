@@ -39,17 +39,17 @@ from gguf.constants import GGMLQuantizationType as GT
 from converter import quant_kernels as qk
 
 
-# Default assumes this repo and Nz-LTX23-backend are cloned as sibling
-# directories (the Rootport-AI GitHub org layout); override with the REF_GGUF
-# environment variable if your layout differs or the backend is unavailable.
-# Absent either way, every check below that needs it is skipped (see
-# `skip_ref` / `ref_missing`).
+# Default assumes this repo and Nz-Videomni (the backend) are cloned as
+# sibling directories (the Rootport-AI GitHub org layout); override with the
+# REF_GGUF environment variable if your layout differs or the backend is
+# unavailable. Absent either way, every check below that needs it is skipped
+# (see `skip_ref` / `ref_missing`).
 _DEFAULT_REF_GGUF = str(
     Path(__file__).resolve().parents[2]
-    / "Nz-LTX23-backend"
+    / "Nz-Videomni"
     / "models"
-    / "ltx-2.3-gguf"
-    / "LTX-2.3-distilled-1.1"
+    / "LTX23"
+    / "Weights"
     / "LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf"
 )
 REF_GGUF = os.environ.get("REF_GGUF", _DEFAULT_REF_GGUF)
