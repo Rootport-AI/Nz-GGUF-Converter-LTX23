@@ -571,13 +571,9 @@ def _dequantize_asym_w4a8_int8(
         )
 
     groupsize = int(marker.get("convrot_groupsize", CONVROT_GROUPSIZE))
-    # ConvRot is unconditional for this format; honour an explicit False only if
-    # a caller hand-built the marker, which parse_quant_marker never produces.
-    matrix = (
-        _rotation_matrix(in_features, groupsize, layer_name)
-        if bool(marker.get("convrot", True))
-        else None
-    )
+    # ConvRot is unconditional for this format, so the rotation is not optional
+    # here: parse_quant_marker refuses a marker that claims otherwise.
+    matrix = _rotation_matrix(in_features, groupsize, layer_name)
 
     out = np.empty((rows, in_features), dtype=np.float32)
     for start, stop in _row_chunks(rows, in_features):

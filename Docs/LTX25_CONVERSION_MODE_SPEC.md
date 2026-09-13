@@ -2,15 +2,17 @@
 
 ## Status, compatibility, and enablement gate
 
-This document is the implementation contract for exactly three frozen profiles: legacy ltx23, opt-in ltx25 (the LTX 2.5 transformer), and opt-in gemma4-ltx25 (the LTX-fine-tuned Gemma 4 text encoder bundled in a separate source file). The LTX 2.3 default CLI, config, reference-typemap workflow, output naming, and artifact behavior remain backward compatible. gemma4-ltx25 is documented in its own section below; every clause elsewhere in this document that refers to "the ltx25 profile" or "the LTX 2.5 transformer" describes ltx25 specifically and does not extend to gemma4-ltx25 unless the gemma4-ltx25 section says so.
+This document is the implementation contract for exactly four frozen profiles: legacy ltx23, opt-in ltx25 (the LTX 2.5 transformer), opt-in gemma4-ltx25 (the LTX-fine-tuned Gemma 4 text encoder bundled in a separate source file), and opt-in ltx25-comfyquant (a community redistribution of the LTX 2.5 transformer whose Linear weights arrive pre-quantized in a ComfyUI format). The LTX 2.3 default CLI, config, reference-typemap workflow, output naming, and artifact behavior remain backward compatible. gemma4-ltx25 and ltx25-comfyquant are each documented in their own section below; every clause elsewhere in this document that refers to "the ltx25 profile" or "the LTX 2.5 transformer" describes ltx25 specifically and does not extend to gemma4-ltx25 or ltx25-comfyquant unless that profile's own section says so.
 
-LTX 2.5 conversion accepts only an independently approved E4 map. E1-E3 are complete: a selected ltx25 command admits only the authenticated pinned source, uses the compatible official builder key/shape/component oracle, and writes/verifies the canonical 4,349-row bundle inventory; it refuses a draft map for conversion. The replacement 4,349-row E4 is independently approved. The earlier 4,091-row map and its E5/E6 output are intentionally stale after the bundle migration and cannot be reused. Fresh E5/E6 are complete for both opt-in profiles as of 2026-08-21; the recorded output digests are in the Open gates section. Passing them is necessary but not sufficient for publication or backend use, which remain separately gated.
+LTX 2.5 conversion accepts only an independently approved E4 map. E1-E3 are complete: a selected ltx25 command admits only the authenticated pinned source, uses the compatible official builder key/shape/component oracle, and writes/verifies the canonical 4,349-row bundle inventory; it refuses a draft map for conversion. The replacement 4,349-row E4 is independently approved. The earlier 4,091-row map and its E5/E6 output are intentionally stale after the bundle migration and cannot be reused. Fresh E5/E6 are complete for the ltx25 and gemma4-ltx25 profiles as of 2026-08-21 (ltx25-comfyquant has no E-numbered evidence of its own; its contract and gates are in its own section below); the recorded output digests are in the Open gates section. Passing them is necessary but not sufficient for publication or backend use, which remain separately gated.
 
 The sole initial LTX 2.5 source is:
 
     diffusion_models/ltx-2.5-22b-distilled-transformer-bf16.safetensors
 
-Its 4,349 emitted tensors must match the authenticated E3 safetensors-header per-key source-dtype table: 3,801 transformer BF16, 290 transformer F32, and 258 connector BF16. F16, INT8 ConvRot, FP8, NVFP4, or any other dtype that differs from the exact E3 row is rejected. The converter must not dequantize, reinterpret, or silently accept a prequantized source.
+Its 4,349 emitted tensors must match the authenticated E3 safetensors-header per-key source-dtype table: 3,801 transformer BF16, 290 transformer F32, and 258 connector BF16. F16, INT8 ConvRot, FP8, NVFP4, or any other dtype that differs from the exact E3 row is rejected. Within ltx25 the converter must not dequantize, reinterpret, or silently accept a prequantized source.
+
+This dtype clause governs the ltx25 profile only. ltx25-comfyquant is a separate opt-in profile with its own source, its own admission contract, and its own section below: it deliberately admits a pre-quantized community source and dequantizes it explicitly. It neither relaxes nor reinterprets anything above -- ltx25 keeps refusing every non-BF16/F32 source dtype, and neither profile reads the other's source file.
 
 ## Evidence register and primary sources
 
@@ -78,7 +80,7 @@ The adjacent backend is a static consumer handoff only. It is not the LTX 2.5 or
 
 ## Profile, CLI, and scope boundary
 
-The profile implementation is a frozen two-entry data table plus explicit functions or if statements. Do not use a class hierarchy, generic DSL/registry, plugin system, dynamic import, or automatic profile detection.
+The profile implementation is a frozen four-entry data table plus explicit functions or if statements. Do not use a class hierarchy, generic DSL/registry, plugin system, dynamic import, or automatic profile detection.
 
 All profile-aware commands default to ltx23. Omission of model must preserve the current legacy source/reference/output resolution exactly. An unknown profile is an argparse error.
 
@@ -204,6 +206,128 @@ Converter CI remains converter-only: no backend, Torch, or full-artifact depende
 - `gemma_source_checkpoint` passthrough: verbatim bytes in the output KV, admission rejection for a missing/empty/non-JSON/non-object/`gemma_version`-less value before any tensor write, self-verify failure when a writer drops the KV, and no such KV or warning for an LTX 2.3 source.
 
 E1-E4 are complete for the corrected bundle contract, and E5/E6 are complete for the fresh 4,349-row artifact (see Open gates). Backend integration remains a separate repository/stage. After it implements LTX 2.5 construction, run one representative fixed-seed end-to-end case; no broad benchmark campaign is part of this plan.
+
+## ltx25-comfyquant profile (community pre-quantized LTX 2.5 transformer)
+
+### Purpose and boundary
+
+This is a fourth, independent opt-in profile implemented in `src/converter/ltx25_comfyquant.py`, with the numeric inverse quantization isolated in `src/converter/comfy_dequant.py`. It admits a *community* redistribution of the same LTX 2.5 transformer architecture whose `torch.nn.Linear` weights were pre-quantized by ComfyUI-style tooling, dequantizes them to float32, and re-quantizes to the GGUF types the backend's fused kernels implement. Its purpose is the case where no bf16 original of a fine-tune exists anywhere, so the pre-quantized file is the only obtainable source.
+
+The admitted source quantization formats are exactly `int8_tensorwise` (8-bit weights with a per-output-row scale, optionally rotated by ConvRot) and `asym_w4a8_int8` (4-bit codebook, per-group FP8 scale, per-row F32 scale, ConvRot unconditional). A tensor that carries no quantization sidecars passes through as plain BF16 or F32. Every other stored dtype and every other marker format -- FP8, NVFP4, or any name not on the allowlist -- is rejected, as is an unknown marker key, a ConvRot group size other than 256, or a w4a8 group size other than 16.
+
+The scope boundary of the ltx25 section applies here unchanged: only the 4,091 transformer rows and the two 129-row embedding connectors are emitted, the connectors keep their bare stripped names and BF16 type, and Gemma language-model weights, text projection, VAE, audio VAE, vocoder, upscalers, and LoRAs remain out of scope. ltx25-comfyquant and ltx25 never read each other's source file. This profile shares the reader/writer/streaming/K kernels and reuses `ltx25.py`'s header, digest, disk-preflight and atomic-write helpers -- the same "separate module, reuse the private helpers" arrangement `ltx25_gemma.py` uses. `convert.py`, `quant_kernels.py`, `metadata.py`, `ltx25_gemma.py` and every checked-in `typemap/` artifact are unmodified by it.
+
+### Structural admission: no file-identity lock
+
+A community build has no authenticated repository, revision or published digest, so this profile has no E1-style source lock. Identity is replaced by five structural checks. All of them are fail-closed and all of them run before the multi-hour tensor write:
+
+1. **Config digest.** The UTF-8 bytes of `__metadata__["config"]` must hash to the pinned builder oracle's `config_bytes_sha256`. A file whose architecture definition differs by one byte is not this architecture and is refused.
+2. **Key set.** Every raw header key must carry the official `model.diffusion_model.` prefix; exactly one strip is applied; the folded logical key set must equal the official three-component oracle (4,091 transformer + 129 audio connector + 129 video connector = 4,349) with no missing, extra or duplicate row.
+3. **Shape.** Every logical row's shape must equal the oracle's shape exactly.
+4. **Format allowlist.** Every quantized layer must carry a `comfy_quant` marker naming an admitted format, and its sidecar set, dtypes and shapes must match that format's geometry exactly.
+5. **`gemma_source_checkpoint`.** Required, as for ltx25: a non-empty JSON object with a non-empty `gemma_version` string, copied verbatim to the output KV.
+
+`--expect-sha256` is an *optional* identity pin: when supplied, the source's full SHA-256 must equal it. It is deliberately not required and is not stored in `config.toml`, because there is no authority to pin it to.
+
+Unknown `__metadata__` keys are recorded, never rejected: the community tooling writes its own entries (`quant_format`, `quant_mixed_hi_layers`), which are preserved in the inventory and the manifest and never written to the GGUF.
+
+### Header completeness
+
+After the shared header validation and before anything else, the largest declared `data_offsets[1]` must equal `file size - payload base`. A mismatch is rejected with a message that names the declared payload size, the size the file actually provides, the difference, and how many tensors end beyond the end of the file. The shared tensor-entry validation would also stop such a file, but its message names one arbitrary out-of-range tensor; this front-loaded check exists so the operator is told the real cause, which is almost always a truncated download.
+
+### Logical tensors and sidecar geometry
+
+A quantized weight is stored as `<layer>.weight` plus sidecars. The suffixes `weight_scale`, `weight_codebook`, `weight_s_channel`, `weight_s_rel` and `comfy_quant` are folded into the parent `<layer>.weight` row; a sidecar with no parent weight is an error, and no sidecar ever reaches the output. The stripped logical name is what the type policy and the GGUF use; the raw key is retained beside it because the shared component classifier requires the `model.diffusion_model.` prefix and rejects an already-stripped key.
+
+The `comfy_quant` marker is a 1-D `U8` UTF-8 JSON byte string. Per format the sidecar set must be exactly:
+
+| Format | Stored `weight` | Required sidecars | Logical width |
+| --- | --- | --- | --- |
+| `int8_tensorwise` | I8 `[out, in]` | `weight_scale` F32 `[out, 1]` or `[out]`; `comfy_quant` | `in` |
+| `asym_w4a8_int8` | I8 `[out, in/2]`, two 4-bit codes per byte | `weight_s_rel` F8_E4M3 `[out, in/group_size]`; `weight_s_channel` F32 `[out]`; `weight_codebook` F32 `[16]`; `comfy_quant` | twice the stored width |
+
+The logical width must be divisible by `group_size` and, where ConvRot is enabled, by `convrot_groupsize`. A tensor with no sidecars is admitted only as BF16 or F32.
+
+`ltx25._DTYPE_BITS` gains a single `F8_E4M3` entry so the shared header reader can size the w4a8 scale sidecar. That entry is a size table, not an admission list: the ltx25 profile's own source-dtype allowlist is unchanged and still rejects an F8_E4M3 source with its existing BF16/F32 message.
+
+### Type policy
+
+The approved ltx25 E4 map is the type policy. It is loaded with the same approved-status requirement as ltx25 and read for `name`, `shape_logical` and `ggml_type` only. Its `inventory_sha256` binds it to the *official* bf16 inventory and its `source_dtype` column describes the *official* file, so neither applies to a community source and both are deliberately ignored; the map file is never written and its SHA-256 is recorded in the manifest.
+
+The join requires the policy's name set and the folded inventory's name set to be equal and every shape to match. Source dtypes are intentionally not compared, because a community file legitimately stores some rows at a different width than the official one. Target selection is then fixed:
+
+- a `Q4_K` map row is emitted as `--quant-type` (default `Q6_K`; `Q4_K` reproduces the official type layout exactly),
+- a `BF16` or `F32` map row is emitted unchanged,
+- any other map type is an error,
+- narrowing an F32 source row to a BF16 target is an error (no such row exists in the current data, but the guard is explicit rather than assumed).
+
+The post-assertion is derived from the policy itself -- the policy's own type histogram with `Q4_K` rewritten to the selected type -- so a miniature fixture states its own expected counts without a second code path. On the approved 4,349-row map that derivation is `{BF16: 2401, F32: 290, <quant_type>: 1658}`.
+
+Connector rows that the community file stores quantized are dequantized and emitted BF16, preserving the bundle-loader contract. Raw-byte containment (`_verify_connector_raw_bytes`) cannot hold for a payload that was dequantized, so `_verify_output` is called with `source_path=None` and the numerical comparison against the official artifact (gates G-A and G-B below) is the replacement evidence.
+
+### Dequantization
+
+`comfy_dequant.py` implements the inverse of both formats in float32 with NumPy only. It knows nothing about safetensors, GGUF, type maps or the CLI: it takes plain arrays and returns a plain array. The formats themselves are documented by the upstream comfy-kitchen project (Apache-2.0), which was read as a *specification*; no code was copied from it, and nothing was ported from ComfyUI itself (GPL-3.0).
+
+- **ConvRot** uses the normalized regular Hadamard matrix: the Kronecker power of the 4x4 seed `[[1,1,1,-1],[1,1,-1,1],[1,-1,1,1],[-1,1,1,1]]` divided by the square root of its size. That matrix is symmetric, orthogonal and involutory, so the inverse rotation is the same operation as the forward one. Only size 256 is accepted.
+- **`int8_tensorwise`**: multiply the int8 codes by the per-output-row F32 scale, then, when the marker sets `convrot`, apply the rotation to contiguous 256-channel groups.
+- **`asym_w4a8_int8`**: split each byte low nibble first (byte *i* holds element *2i* in bits 0-3 and element *2i+1* in bits 4-7); look the 4-bit codes up in the per-tensor 16-entry F32 codebook; multiply by the group's FP8 scale; round to the int8 grid and clip to [-127, 127], as the format defines the intermediate; multiply by the per-row F32 channel scale; apply the inverse rotation.
+- **FP8 E4M3** is decoded through a 256-entry table built from the format definition: 1 sign bit, 4 exponent bits, 3 mantissa bits, bias 7, subnormals at `2^-6 * mantissa/8`, no infinities, NaN only at `0x7F`/`0xFF`, largest finite value 448. NumPy has no FP8 dtype, so the sidecar is read as raw `uint8`.
+- The rotation is performed in **float32**. ComfyUI casts to bf16 before rotating; for a GGUF target the extra precision is kept.
+- **Non-finite values are an immediate error**, checked on every row chunk of the result and on the decoded FP8 scales, with the layer named. This is load-bearing: the connector rows emitted as BF16 are outside `_verify_output`'s NaN/Inf sweep, which covers Q types only.
+- Memory is bounded. Nibble expansion, codebook lookup, scale multiplication and the rotation run in one row-chunk loop writing straight into a pre-allocated float32 output array, so the transient working set stays in the tens of MiB instead of exceeding a gigabyte on the largest Linear.
+- bf16 emission rounds half-to-even, bit-identical to the shared reader's F32 branch, so a dequantized row emitted as BF16 rounds the way the rest of the converter rounds.
+
+### Output contract
+
+The output GGUF carries exactly seven KV keys: `general.architecture`, `general.quantization_version`, `general.file_type`, `config`, `license`, `model_version`, `gemma_source_checkpoint`. `metadata.apply_kv` writes only keys it knows, so the community file's own quantization metadata is dropped by construction; the check turns that into a contract in both directions and compares *sets*, not counts, so the failure names the offending key. An eighth key that `apply_kv` does know (for example `encrypted_wandb_properties`) fails just as loudly as a missing one.
+
+`general.file_type` stays at the fixed value 15 (Q4_K_M) that `metadata.py` writes for every profile. With `--quant-type Q6_K` that value does not describe the file. `metadata.py` is deliberately unmodified: the backend never reads `general.*`, and the authoritative type record is the manifest's `quant_type`, restated in the manifest's `general_file_type_note` for the benefit of third-party tools that do read `general.file_type`.
+
+The written file must be exactly the size calculated from the records and the writer framing before the write began. `_verify_output` runs on the temporary file -- tensor count, names, order, types and shapes against the records, `config` KV bytes equal to the source, `gemma_source_checkpoint` KV bytes equal to the source, and a bounded finiteness sweep over every Q tensor -- followed by the KV-key-set check and the size assertion. The commit order of the ltx25 section is unchanged: verify the temporary file, `os.replace`, then write `<out>.inventory.json` and `<out>.manifest.json`. A failure after the replace is a manifest error that names the committed output.
+
+### Manifest
+
+Format identifier `nz-ltx25-comfyquant-manifest-v1`, written to `<out>.manifest.json`. It is the only record of provenance; none of it is added to the GGUF KV. Fields:
+
+`format`, `profile`, `source_path`, `source_size`, `source_sha256`, `source_quant_format`, `source_quant_mixed_hi_layers`, `quant_kind_counts`, `official_map_path`, `official_map_sha256`, `builder_oracle_sha256`, `inventory_sha256`, `quant_type`, `dequant_layout`, `output_sha256`, `output_size`, `tensor_count`, `type_counts`, `tool_version`, `general_file_type_note`.
+
+`dequant_layout` records the conventions this build implements, each one a decision that would silently change the weights if it were flipped: `nibble_order`, `s_rel_op`, `int8_grid_rounding`, `hadamard`, `rotation_dtype`.
+
+### Inventory
+
+Format identifier `nz-ltx25-comfyquant-inventory-v1`, written to `<out>.inventory.json` and never into `typemap/`. Fields: `format`, `profile`, `source_size`, `source_sha256`, `config_text`, `config_bytes_sha256`, `builder_oracle_sha256`, `logical_tensors` (per row: `name`, `raw_key`, `kind`, `shape_logical`, `source_dtype`, `sidecars`, `marker`), `raw_tensors` (per row: `raw_key`, `source_dtype`, `shape`, `data_offsets`), `quant_summary` (logical and raw counts, kind and dtype histograms, and the distinct marker payloads with their occurrence counts), `source_metadata_extra`, `diagnostics`, and `inventory_sha256`, the canonical-JSON digest of everything above.
+
+### CLI
+
+    inspect     --model ltx25-comfyquant --st-path <src> [--inventory <path>] [--quant-type Q6_K|Q4_K] [--expect-sha256 <hex>]
+    convert     --model ltx25-comfyquant --st-path <src> [--out <path>] [--quant-type Q6_K|Q4_K] [--quant-workers N] [--force] [--expect-sha256 <hex>]
+    self-verify --model ltx25-comfyquant --st-path <src> [--out <path>] [--quant-type Q6_K|Q4_K] [--expect-sha256 <hex>]
+
+`--st-path` is mandatory: the source is community-built, so `config.toml` carries no source path and no source lock for this profile. `inspect` is the dry run; `convert` performs the same admission itself, so it does not depend on a prior `inspect`. The default output is `<output_dir>/<source stem>-<quant_type>.gguf`. On `self-verify`, `--quant-type` only selects that default file name; the type policy actually verified is the manifest's.
+
+`download`, `build-map`/`build-policy`, `extract-typemap` and `all` are not available for this profile. Each reports why on stderr and exits 1 rather than falling through to the LTX 2.3 tables; `download` in particular must not silently fetch the unrelated pinned LTX 2.3 artifact.
+
+The `[profiles."ltx25-comfyquant"]` table holds `official_map_path`, `builder_oracle_path`, `output_dir`, `quant_workers` (default 4, CLI range 1-8) and `quant_type` (default `Q6_K`). It deliberately holds no `source_*` keys. `convert` and `self-verify` additionally accept `--map` and `--builder-oracle` to override those two paths; `inspect` accepts only `--builder-oracle` and takes the map from the profile table.
+
+### Verification gates
+
+Converter CI remains converter-only: no backend, Torch, or full-artifact dependency. The required evidence is:
+
+- **Unit and fixture tests.** Hadamard symmetry/orthogonality/involution and its rejection of non-powers-of-four; the FP8 E4M3 table against an independent bit-assembly implementation for all 256 bytes, its anchor values, and the absence of infinities; round trips for both formats through an independently written forward quantizer; the proof that a deliberately swapped nibble order destroys the signal, so the round trip is a detector rather than a tautology; marker parsing and every rejection it owes; bf16 rounding equal to the shared reader; structural rejections (truncated payload, missing or orphaned sidecar, tampered sidecar shape, oracle key surplus/deficit, shape disagreement, config-digest disagreement, missing `gemma_source_checkpoint`, foreign prefix, unknown format, non-allowlisted plain dtype); a full miniature pipeline through `inspect` -> `convert` -> `self-verify` for both quant types; the absence of the source's quantization metadata from the output KV; the CLI refusals; and a SHA-256 assertion that every checked-in `typemap/` artifact is byte-unchanged.
+- **Numerical comparison with the official artifact** (`scripts/compare_comfyquant_vs_official.py`, CPU-only, one tensor at a time): **G-0** coverage -- every selected quantized layer was compared (no unreadable layer, no dequantization error) and every format marker was read from the file rather than inferred from the sidecar set (`markers_assumed == 0`); a truncated source fails G-0 by design, and the script's exit code includes it; **G-A** the connector's plain BF16 rows are byte-identical to the official file; **G-B** the connector's quantized rows reach cosine similarity >= 0.99 against the official weights; **G-C** every quantized layer reaches cosine >= 0.50; **G-D** the transformer's quantized layers reach a cosine median >= 0.90 and a first percentile >= 0.60; **G-E** every layer's standard-deviation ratio lies in [0.50, 2.00]; **G-F** every layer's per-output-row norm correlation is >= 0.80. G-A establishes that the connector was carried over unmodified, which is what makes G-B a measurement of dequantization error rather than of fine-tuning.
+- **Output verification**: `_verify_output`, the seven-key KV contract, the exact size assertion, the manifest, and a separate `self-verify` invocation.
+- **Backend acceptance** (separate repository and stage, GPU): placing the output under the backend's LTX 2.5 weights directory, seeing it enumerated by `GET /models`, loading it through the pipeline with the Gemma-version check passing, the transformer self-test's dispose/rebuild round trip, one short fixed-seed generation compared against the official GGUF's output at the same seed, and optionally the same comparison against a `--quant-type Q4_K` build.
+
+Measured results, and which of these gates are still outstanding, are recorded in `Docs/VERIFICATION.md`, section 8.
+
+### Design approach
+
+Unchanged from the rest of this document: a frozen data table plus explicit functions or if statements. No class hierarchy, generic DSL/registry, plugin system, dynamic import, or automatic profile detection. Admission is fail-closed throughout -- an unknown key, an unknown format, a missing sidecar or an unexpected count is an error, never a silently ignored input. Errors subclass `ltx25.Ltx25Error`, so the existing CLI handler prints them without a traceback.
+
+### Terms of use
+
+The source is a third-party redistribution of a derivative of the LTX 2.5 weights, obtained by the operator, and remains subject to the LTX-2.x Community License and to the distribution terms of the site that hosts it; observing both is the operator's responsibility. **Output produced by this profile is for the operator's own use and must not be redistributed.** comfy-kitchen (Apache-2.0) was read as a format specification and not copied; ComfyUI (GPL-3.0) was not ported.
 
 ## Open gates
 

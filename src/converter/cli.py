@@ -594,7 +594,6 @@ def _comfyquant_settings(args: argparse.Namespace, config: dict[str, Any]) -> di
         "quant_type": comfyquant_mod.validate_quant_type(
             getattr(args, "quant_type", None) or defaults["quant_type"]
         ),
-        "quant_workers": defaults["quant_workers"],
     }
 
 
@@ -972,7 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_convert.add_argument(
         "--force",
         action="store_true",
-        help="With --model ltx25/gemma4-ltx25, replace an existing output only after temp self-verification.",
+        help="With --model ltx25/gemma4-ltx25/ltx25-comfyquant, replace an existing output only after temp self-verification.",
     )
     p_convert.add_argument(
         "--quant-type",

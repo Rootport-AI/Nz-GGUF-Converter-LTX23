@@ -46,6 +46,7 @@ from gguf import GGUFReader, GGUFWriter
 from . import __version__
 from . import comfy_dequant
 from . import ltx25
+from . import metadata as metadata_mod
 from .convert import _SafetensorsRaw, _tensor_payload
 from .quant_kernels import quantize, validate_quant_workers
 
@@ -66,6 +67,11 @@ DEFAULT_QUANT_TYPE = "Q6_K"
 OFFICIAL_BF16_ROWS = 2401
 OFFICIAL_F32_ROWS = 290
 OFFICIAL_QUANT_ROWS = 1658
+#: Row count of the approved official map (4,349).  A policy of exactly this
+#: size *is* the official map, so its projected histogram must be the official
+#: one and not merely self-consistent; a miniature fixture has fewer rows and is
+#: held to its own projection alone.
+OFFICIAL_ROWS = OFFICIAL_BF16_ROWS + OFFICIAL_F32_ROWS + OFFICIAL_QUANT_ROWS
 
 PLAIN_KIND = "plain"
 #: Source dtypes admitted for a tensor that carries no quantization sidecars.
@@ -90,8 +96,9 @@ _REQUIRED_SIDECARS = {
         {"weight_codebook", "weight_s_channel", "weight_s_rel", MARKER_SUFFIX}
     ),
 }
-#: 4-bit asymmetric codebook: one F32 level per nibble value.
-_W4A8_CODEBOOK_SIZE = 16
+#: 4-bit asymmetric codebook: one F32 level per nibble value.  The dequantiser
+#: owns this number; the header check here must never drift away from it.
+_W4A8_CODEBOOK_SIZE = comfy_dequant.CODEBOOK_SIZE
 _W4A8_NIBBLES_PER_BYTE = 2
 
 _MAP_SUBSTITUTED_TYPE = "Q4_K"
@@ -767,6 +774,29 @@ def expected_type_counts_for_policy(
     return dict(sorted(counts.items()))
 
 
+def _expected_type_counts_for_conversion(
+    policy: dict[str, dict[str, Any]], quant_type: str
+) -> dict[str, int]:
+    """The post-assertion a real conversion arms.
+
+    :func:`expected_type_counts_for_policy` is self-referential by design -- it
+    reads the histogram off the very policy it will check -- which is what lets
+    a miniature fixture state its own.  For the real thing that is not enough:
+    a full-size policy *is* the approved official map, so its projection must
+    also equal the independently recorded official histogram, or the map has
+    been edited under us.
+    """
+    counts = expected_type_counts_for_policy(policy, quant_type)
+    if len(policy) == OFFICIAL_ROWS:
+        official = official_type_counts(quant_type)
+        if counts != official:
+            raise _policy_error(
+                f"the {OFFICIAL_ROWS}-row official map projects type counts {counts!r}, not the "
+                f"official histogram {official!r}"
+            )
+    return counts
+
+
 def records_for_inventory_and_policy(
     inventory: ComfyQuantInventory,
     policy: dict[str, dict[str, Any]],
@@ -961,7 +991,13 @@ def _comfy_tensor_payload(
             quant_workers=quant_workers,
             q4_executor=q4_executor,
         )
-    weights = _dequantized_weight(reader, row)
+    try:
+        weights = _dequantized_weight(reader, row)
+    except comfy_dequant.ComfyDequantError as exc:
+        raise _reject(
+            f"quantized tensor {row['raw_key']!r} with format {row['kind']!r} could not be "
+            f"dequantized ({exc})"
+        ) from exc
     target = record["ggml_type"]
     if target == "BF16":
         return comfy_dequant.f32_to_bf16_u16(weights)
@@ -986,12 +1022,11 @@ def _output_kv_keys(output_path: str | Path) -> set[str]:
     return {key for key in reader.fields if not key.startswith(_READER_PSEUDO_FIELD_PREFIX)}
 
 
-def _verify_kv_contract(output_path: str | Path) -> None:
-    """Require the output's KV key set to be exactly :data:`EXPECTED_KV_KEYS`.
+def _require_expected_kv_keys(actual: set[str], subject: str) -> None:
+    """Require ``actual`` to be exactly :data:`EXPECTED_KV_KEYS`.
 
     Compared as a set, not a count, so the failure names the offending keys.
     """
-    actual = _output_kv_keys(output_path)
     if actual == EXPECTED_KV_KEYS:
         return
     parts = []
@@ -1002,9 +1037,48 @@ def _verify_kv_contract(output_path: str | Path) -> None:
     if unexpected:
         parts.append(f"unexpected={unexpected!r}")
     raise _output_error(
-        f"output KV key set is not the expected {sorted(EXPECTED_KV_KEYS)!r}: "
+        f"{subject} KV key set is not the expected {sorted(EXPECTED_KV_KEYS)!r}: "
         + "; ".join(parts)
     )
+
+
+def _planned_kv_keys(source_metadata: dict[str, Any]) -> set[str]:
+    """The KV key set a write of ``source_metadata`` would produce.
+
+    ``metadata.apply_kv`` writes the two fixed ``general.*`` integers plus every
+    string key it knows about that the source actually carries (non-empty), and
+    ``GGUFWriter.__init__`` adds ``general.architecture``.  The key lists come
+    from :mod:`converter.metadata` itself, so this projection cannot drift away
+    from what the writer does.
+    """
+    keys = {
+        "general.architecture",
+        "general.quantization_version",
+        "general.file_type",
+    }
+    for key in (
+        metadata_mod._REQUIRED_KEY,
+        *metadata_mod._OPTIONAL_STRING_KEYS,
+        *metadata_mod._PROFILE_STRING_KEYS,
+    ):
+        if source_metadata.get(key):
+            keys.add(key)
+    return keys
+
+
+def _verify_planned_kv_contract(source_metadata: dict[str, Any]) -> None:
+    """Decide the KV contract from the source, before the long write.
+
+    The contract is a property of the source ``__metadata__`` alone, so an
+    off-contract source can be refused up front instead of after roughly
+    19.6 GB has been written and must be thrown away.
+    """
+    _require_expected_kv_keys(_planned_kv_keys(source_metadata), "planned output")
+
+
+def _verify_kv_contract(output_path: str | Path) -> None:
+    """Require the written output's KV key set to be exactly :data:`EXPECTED_KV_KEYS`."""
+    _require_expected_kv_keys(_output_kv_keys(output_path), "output")
 
 
 def _verify_output_size(output_path: Path, required_bytes: int) -> None:
@@ -1091,7 +1165,7 @@ def convert_comfyquant(
         inventory,
         policy,
         quant_type,
-        expected_type_counts=expected_type_counts_for_policy(policy, quant_type),
+        expected_type_counts=_expected_type_counts_for_conversion(policy, quant_type),
     )
     if output.exists() and not force:
         raise ltx25.OutputExistsError(
@@ -1106,6 +1180,7 @@ def convert_comfyquant(
         raise _mismatch("source config changed after header admission")
     # Admitted before the long write, not after it.
     gemma_source_checkpoint = ltx25.gemma_source_checkpoint_from_metadata(metadata)
+    _verify_planned_kv_contract(metadata)
     required_bytes = ltx25.estimate_gguf_size(records, metadata)
     ltx25._preflight_disk(output, required_bytes)
 
@@ -1246,7 +1321,7 @@ def verify_comfyquant(
         inventory,
         policy,
         quant_type,
-        expected_type_counts=expected_type_counts_for_policy(policy, quant_type),
+        expected_type_counts=_expected_type_counts_for_conversion(policy, quant_type),
     )
     if manifest.get("tensor_count") != len(records) or manifest.get(
         "type_counts"

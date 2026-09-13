@@ -198,6 +198,37 @@ W4A8_MARKER = {
 # ==========================================================================
 
 
+def test_hadamard_is_the_regular_h4_kronecker_power():
+    """Pin the *basis*, not only the properties every Hadamard basis shares.
+
+    A Sylvester-type ``kron(H2, H2)`` power is symmetric, involutory and
+    uniformly ``+/- 1/sqrt(size)`` too, so the property checks below cannot tell
+    the two apart -- yet picking the wrong one rotates every weight differently
+    and silently.  The seed is written out here, independently of the module's
+    own copy, and the powers of four are exact in float32 (the divisor is a
+    power of two), so these are strict equalities.
+    """
+    h4 = np.array(
+        [
+            [1.0, 1.0, 1.0, -1.0],
+            [1.0, 1.0, -1.0, 1.0],
+            [1.0, -1.0, 1.0, 1.0],
+            [-1.0, 1.0, 1.0, 1.0],
+        ],
+        dtype=np.float32,
+    )
+    assert np.array_equal(cd.hadamard(4) * np.float32(2.0), h4)
+    assert np.array_equal(cd.hadamard(16) * np.float32(4.0), np.kron(h4, h4))
+
+    # The Sylvester seed of the same size satisfies the property tests as well,
+    # and is not the basis ConvRot uses.
+    h2 = np.array([[1.0, 1.0], [1.0, -1.0]], dtype=np.float32)
+    sylvester_4 = np.kron(h2, h2)
+    assert np.array_equal(sylvester_4, sylvester_4.T)
+    assert np.array_equal(sylvester_4 @ sylvester_4, 4.0 * np.eye(4, dtype=np.float32))
+    assert not np.array_equal(cd.hadamard(4) * np.float32(2.0), sylvester_4)
+
+
 def test_hadamard_256_is_symmetric_orthogonal_and_uniform():
     matrix = cd.hadamard(256)
     assert matrix.dtype == np.float32

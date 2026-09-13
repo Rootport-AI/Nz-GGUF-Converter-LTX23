@@ -16,6 +16,8 @@ plus, for the connector's *non*-quantised BF16 tensors, plain raw-byte identity.
 
 Gates (thresholds from the conversion plan):
 
+    G-0  coverage: every selected layer was compared, with a marker read from
+         the file (no errored layer, no unreadable layer, no assumed marker)
     G-A  connector plain BF16 tensors are byte-identical to the official file
     G-B  connector w4a8 layers        cos >= 0.99
     G-C  every quantised layer        cos >= 0.50
@@ -34,6 +36,10 @@ format is inferred from which sidecars exist (``weight_scale`` -> int8 with
 ConvRot on, ``weight_s_rel`` -> asym w4a8) and the layer is flagged
 ``marker_assumed``.  Where a marker *is* readable it is parsed strictly with
 :func:`converter.comfy_dequant.parse_quant_marker` instead.
+
+Such a run still reports its per-layer metrics, but it cannot pass: G-0 counts
+every skipped layer and every assumed marker as a failure, so the exit code
+stays non-zero until the evidence is produced against a complete file.
 
 Memory
 ------
@@ -449,13 +455,39 @@ def _gate(status: str, checked: int, failures: list[dict], **detail: Any) -> dic
 
 
 def evaluate_gates(
-    layer_records: list[dict[str, Any]], plain_records: list[dict[str, Any]]
+    layer_records: list[dict[str, Any]],
+    plain_records: list[dict[str, Any]],
+    counts: dict[str, int],
 ) -> dict[str, dict[str, Any]]:
     ok_layers = [r for r in layer_records if r["status"] == "ok"]
     connector_bf16 = [
         r for r in plain_records if r["component"] == "connector" and r["dtype"] == "BF16"
     ]
     gates: dict[str, dict[str, Any]] = {}
+
+    # G-0 -- coverage.  Every gate below is evaluated over the layers that were
+    # actually compared, so on an incomplete source they would all pass on a
+    # handful of survivors.  This gate is what makes the run's exit code mean
+    # "the whole selection was checked against the marker text the file really
+    # carries": an errored layer, an unreadable layer or an assumed marker each
+    # fail it.
+    selected = counts["quant_layers_selected"]
+    failures = [
+        {"counter": name, "count": counts[name]}
+        for name in ("quant_layers_error", "quant_layers_unreadable", "markers_assumed")
+        if counts[name]
+    ]
+    gates["G-0"] = _gate(
+        "skipped" if not selected else ("pass" if not failures else "fail"),
+        selected,
+        failures,
+        errored=counts["quant_layers_error"],
+        unreadable=counts["quant_layers_unreadable"],
+        markers_assumed=counts["markers_assumed"],
+        description=(
+            "coverage: every selected layer compared, with its own readable comfy_quant marker"
+        ),
+    )
 
     # G-A -- connector plain BF16 byte identity
     checked = [r for r in connector_bf16 if r["status"] == "ok"]
@@ -609,10 +641,15 @@ def print_summary(report: dict[str, Any]) -> None:
     print(f"  connector BF16 unreadable     : {counts['connector_plain_unreadable']}")
     print("")
     print("gates")
-    for name in ("G-A", "G-B", "G-C", "G-D", "G-E", "G-F"):
+    for name in ("G-0", "G-A", "G-B", "G-C", "G-D", "G-E", "G-F"):
         gate = report["gates"][name]
         line = f"  {name}  {gate['status'].upper():8s} checked={gate['checked']:5d} failed={gate['failed']:4d}  {gate['description']}"
         print(line)
+        if name == "G-0":
+            print(
+                f"        errored={gate['errored']}  unreadable={gate['unreadable']}  "
+                f"markers_assumed={gate['markers_assumed']}"
+            )
     print("")
     all_cos = report["distributions"]["cos"]
     all_std = report["distributions"]["std_ratio"]
@@ -757,7 +794,7 @@ def main() -> int:
         ),
     }
 
-    gates = evaluate_gates(layer_records, plain_records)
+    gates = evaluate_gates(layer_records, plain_records, counts)
 
     distributions = {
         "cos": _distribution([r["metrics"]["cos"] for r in ok_layers], prefix=""),

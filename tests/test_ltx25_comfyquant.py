@@ -982,7 +982,9 @@ def test_a_failure_during_the_write_leaves_no_output_and_no_temporary(tmp_path, 
         raise comfy_dequant.ComfyDequantError("synthetic sidecar failure")
 
     monkeypatch.setattr(comfyquant.comfy_dequant, "dequantize_layer", _boom)
-    with pytest.raises(comfy_dequant.ComfyDequantError) as exc:
+    # The dequantiser's own error is wrapped in a profile error, so the CLI
+    # prints it as a message instead of a traceback.
+    with pytest.raises(comfyquant.ComfyQuantError) as exc:
         comfyquant.convert_comfyquant(
             source,
             output,
@@ -992,6 +994,45 @@ def test_a_failure_during_the_write_leaves_no_output_and_no_temporary(tmp_path, 
             quant_workers=1,
         )
     assert "synthetic sidecar failure" in str(exc.value)
+    assert not output.exists()
+    assert not Path(f"{output}.manifest.json").exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_a_layer_that_cannot_be_dequantized_names_itself_without_a_traceback(tmp_path):
+    """A non-finite dequantisation result is a profile error, not a raw ValueError.
+
+    The source passes every structural check -- a NaN ``weight_scale`` is a
+    well-formed F32 ``[out, 1]`` tensor -- so the failure can only surface
+    during the write, where it must still arrive as an ``Ltx25Error`` carrying
+    the offending layer's key.
+    """
+    tensors = _replace(
+        _default_tensors(),
+        f"{INT8_LAYER}.weight_scale",
+        "F32",
+        _f32([0.01, float("nan"), 0.03, 0.04]),
+        [OUT_FEATURES, 1],
+    )
+    source, oracle = _artifacts(tmp_path, tensors)
+    map_path = tmp_path / "map.json"
+    _write_policy_map(map_path)
+    output = tmp_path / "fixture.gguf"
+
+    with pytest.raises(comfyquant.ComfyQuantError) as exc:
+        comfyquant.convert_comfyquant(
+            source,
+            output,
+            builder_oracle_path=oracle,
+            map_path=map_path,
+            quant_type="Q6_K",
+            quant_workers=1,
+        )
+    message = str(exc.value)
+    assert isinstance(exc.value, ltx25.Ltx25Error)
+    assert f"{INT8_LAYER}.weight" in message
+    assert "int8_tensorwise" in message
+    assert "non-finite" in message
     assert not output.exists()
     assert not Path(f"{output}.manifest.json").exists()
     assert list(tmp_path.glob("*.tmp")) == []
@@ -1054,12 +1095,17 @@ def test_a_quantized_w4a8_row_stays_within_the_q6_k_error_budget(tmp_path):
     assert rel_rmse < 0.03, rel_rmse
 
 
-def test_an_extra_known_metadata_key_breaks_the_kv_contract(tmp_path):
+def test_an_extra_known_metadata_key_breaks_the_kv_contract(tmp_path, monkeypatch):
     """The KV contract is a set, so even a key ``apply_kv`` knows is a failure.
 
     ``encrypted_wandb_properties`` is one of the optional strings the shared
     metadata transcoder copies; the community file must not carry it, and if a
     future one does the conversion stops instead of shipping an eighth KV entry.
+
+    The contract is decided from the source metadata, so it stops *before* the
+    write: on the real artifact the alternative is discovering it after roughly
+    19.6 GB has been written.  Booby-trapping ``_temp_path`` is what proves the
+    write never started -- no temporary file can be created without it.
     """
     metadata = _fixture_metadata(
         CONFIG,
@@ -1071,6 +1117,11 @@ def test_an_extra_known_metadata_key_breaks_the_kv_contract(tmp_path):
     map_path = tmp_path / "map.json"
     _write_policy_map(map_path)
     output = tmp_path / "fixture.gguf"
+
+    def _must_not_be_reached(final_path):
+        raise AssertionError(f"the write phase started for {final_path}")
+
+    monkeypatch.setattr(comfyquant.ltx25, "_temp_path", _must_not_be_reached)
 
     with pytest.raises(comfyquant.ComfyQuantOutputError) as exc:
         comfyquant.convert_comfyquant(
@@ -1086,15 +1137,75 @@ def test_an_extra_known_metadata_key_breaks_the_kv_contract(tmp_path):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_a_missing_known_metadata_key_also_breaks_the_kv_contract_before_the_write(
+    tmp_path, monkeypatch
+):
+    """The projection fails in both directions: a key the contract needs is gone."""
+    metadata = _fixture_metadata(CONFIG, model_version="2.5.0")
+    assert "license" not in metadata
+    source, oracle = _artifacts(tmp_path, metadata=metadata)
+    map_path = tmp_path / "map.json"
+    _write_policy_map(map_path)
+    output = tmp_path / "fixture.gguf"
+
+    def _must_not_be_reached(final_path):
+        raise AssertionError(f"the write phase started for {final_path}")
+
+    monkeypatch.setattr(comfyquant.ltx25, "_temp_path", _must_not_be_reached)
+
+    with pytest.raises(comfyquant.ComfyQuantOutputError) as exc:
+        comfyquant.convert_comfyquant(
+            source,
+            output,
+            builder_oracle_path=oracle,
+            map_path=map_path,
+            quant_type="Q6_K",
+            quant_workers=1,
+        )
+    assert "missing=['license']" in str(exc.value)
+    assert not output.exists()
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_the_approved_official_map_projects_the_official_type_counts():
     """The policy-derived post-assertion is the official histogram on the real map."""
     map_path = Path(__file__).resolve().parents[1] / "typemap" / "ltx25_conversion_map.json"
     policy, _ = comfyquant.load_official_type_policy(map_path)
-    assert len(policy) == 4349
+    assert len(policy) == comfyquant.OFFICIAL_ROWS == 4349
     for quant_type in comfyquant.QUANT_TYPES:
         assert comfyquant.expected_type_counts_for_policy(
             policy, quant_type
         ) == comfyquant.official_type_counts(quant_type)
+        # A conversion off this map arms the official histogram as well, not
+        # only the map's own projection of itself.
+        assert comfyquant._expected_type_counts_for_conversion(
+            policy, quant_type
+        ) == comfyquant.official_type_counts(quant_type)
+
+
+def test_a_full_size_policy_is_held_to_the_official_histogram():
+    """4,349 rows means "this is the official map"; its histogram is not negotiable.
+
+    ``expected_type_counts_for_policy`` reads the histogram off the policy it is
+    about to check, so an edited full-size map would simply assert its own edit.
+    One row fewer is a miniature, which keeps stating its own histogram.
+    """
+    edited = {
+        f"transformer_blocks.{index}.weight": {"shape_logical": [4, 4], "ggml_type": "BF16"}
+        for index in range(comfyquant.OFFICIAL_ROWS)
+    }
+    assert comfyquant.expected_type_counts_for_policy(edited, "Q6_K") == {
+        "BF16": comfyquant.OFFICIAL_ROWS
+    }
+    with pytest.raises(comfyquant.ComfyQuantPolicyError) as exc:
+        comfyquant._expected_type_counts_for_conversion(edited, "Q6_K")
+    assert str(comfyquant.OFFICIAL_ROWS) in str(exc.value)
+    assert "2401" in str(exc.value)
+
+    smaller = dict(list(edited.items())[:-1])
+    assert comfyquant._expected_type_counts_for_conversion(smaller, "Q6_K") == {
+        "BF16": comfyquant.OFFICIAL_ROWS - 1
+    }
 
 
 # --------------------------------------------------------------------------
