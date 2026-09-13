@@ -81,6 +81,7 @@ _DTYPE_BITS = {
     "BOOL": 8,
     "U8": 8,
     "I8": 8,
+    "F8_E4M3": 8,
     "F8_E4M3FN": 8,
     "F8_E4M3FNUZ": 8,
     "F8_E5M2": 8,

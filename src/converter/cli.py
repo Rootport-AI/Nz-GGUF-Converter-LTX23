@@ -44,6 +44,7 @@ from . import convert as convert_mod
 from . import convert_vae as convert_vae_mod
 from . import download as download_mod
 from . import ltx25 as ltx25_mod
+from . import ltx25_comfyquant as comfyquant_mod
 from . import ltx25_gemma as gemma_mod
 from . import quant_kernels as quant_kernels_mod
 from . import typemap as typemap_mod
@@ -134,12 +135,18 @@ def _quant_worker_count(args: argparse.Namespace, config: dict[str, Any]) -> int
     if requested is not None:
         return quant_kernels_mod.validate_quant_workers(requested)
     model = _model(args)
-    if model in ("ltx25", "gemma4-ltx25"):
+    if model in ("ltx25", "gemma4-ltx25", "ltx25-comfyquant"):
         profile = config.get("profiles", {}).get(model, {})
         if isinstance(profile, dict):
             return quant_kernels_mod.validate_quant_workers(profile.get("quant_workers", 4))
         return 4
     return 1
+
+
+_EXPECT_SHA_HELP = (
+    "ltx25-comfyquant only: optional identity pin; the community source's "
+    "SHA-256 must equal this value (there is no frozen source lock)"
+)
 
 
 def _quant_worker_argument(text: str) -> int:
@@ -153,6 +160,17 @@ def _quant_worker_argument(text: str) -> int:
 # subcommand handlers
 # --------------------------------------------------------------------------
 def cmd_download(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25-comfyquant":
+        # No source lock exists for a community redistribution, and falling
+        # through to the legacy ltx23 table would silently fetch a different
+        # model entirely.
+        print(
+            "download is not available with --model ltx25-comfyquant: the community "
+            "quantized source is not a pinned Hugging Face artifact. Obtain the file "
+            "yourself and pass it with --st-path.",
+            file=sys.stderr,
+        )
+        return 1
     if _model(args) in ("ltx25", "gemma4-ltx25"):
         is_gemma = _model(args) == "gemma4-ltx25"
         mod = gemma_mod if is_gemma else ltx25_mod
@@ -259,6 +277,9 @@ def cmd_extract_typemap(args: argparse.Namespace, config: dict[str, Any]) -> int
 
 
 def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25-comfyquant":
+        return _cmd_convert_comfyquant(args, config)
+
     if _model(args) == "ltx25":
         lock = _require_ltx25_source_lock(config)
         quant_workers = _quant_worker_count(args, config)
@@ -428,6 +449,9 @@ def cmd_convert_vae(args: argparse.Namespace, config: dict[str, Any]) -> int:
 
 
 def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    if _model(args) == "ltx25-comfyquant":
+        return _cmd_verify_comfyquant(args, config)
+
     if _model(args) == "ltx25":
         _require_ltx25_source_lock(config)
         paths = _ltx25_paths(args, config)
@@ -560,8 +584,159 @@ def cmd_all(args: argparse.Namespace, config: dict[str, Any]) -> int:
     return 0
 
 
+def _comfyquant_settings(args: argparse.Namespace, config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve ltx25-comfyquant defaults; this profile has no source path default."""
+    defaults = comfyquant_mod.default_paths_from_config(config, _PROJECT_ROOT)
+    return {
+        "oracle": _resolve_path(getattr(args, "builder_oracle", None), defaults["oracle"]),
+        "map": _resolve_path(getattr(args, "map", None), defaults["map"]),
+        "output_dir": defaults["output_dir"],
+        "quant_type": comfyquant_mod.validate_quant_type(
+            getattr(args, "quant_type", None) or defaults["quant_type"]
+        ),
+        "quant_workers": defaults["quant_workers"],
+    }
+
+
+def _comfyquant_inputs(
+    args: argparse.Namespace, config: dict[str, Any]
+) -> tuple[Path, dict[str, Any]] | None:
+    """Resolve the three inputs every comfyquant command needs, or report why not.
+
+    The community source has no config.toml default and no source lock, so
+    --st-path is mandatory; the oracle and the approved official map come from
+    the profile table unless overridden.
+    """
+    source_arg = getattr(args, "st_path", None)
+    if not source_arg:
+        print(
+            "--st-path is required with --model ltx25-comfyquant "
+            "(the community source is not pinned in config.toml)",
+            file=sys.stderr,
+        )
+        return None
+    source = Path(source_arg)
+    settings = _comfyquant_settings(args, config)
+    if not source.is_file():
+        print(f"ltx25-comfyquant source safetensors not found: {source}", file=sys.stderr)
+        return None
+    if not settings["oracle"].is_file():
+        print(f"LTX 2.5 builder oracle not found: {settings['oracle']}", file=sys.stderr)
+        return None
+    if not settings["map"].is_file():
+        print(
+            f"Approved official LTX 2.5 conversion map not found: {settings['map']}",
+            file=sys.stderr,
+        )
+        return None
+    return source, settings
+
+
+def _comfyquant_output(
+    args: argparse.Namespace, source: Path, settings: dict[str, Any]
+) -> Path:
+    return _resolve_path(
+        getattr(args, "out", None),
+        comfyquant_mod.default_output_path(
+            settings["output_dir"], source, settings["quant_type"]
+        ),
+    )
+
+
+def _print_comfyquant_manifest(manifest: dict[str, Any], output: Path) -> None:
+    print(f"  quant type       : {manifest['quant_type']}")
+    print(f"  tensors          : {manifest['tensor_count']} {manifest['type_counts']}")
+    print(f"  output size      : {manifest['output_size']} bytes")
+    print(f"  output SHA-256   : {manifest['output_sha256']}")
+    print(f"  inventory        : {comfyquant_mod.default_inventory_path(output)}")
+    print(f"  manifest         : {output}.manifest.json")
+
+
+def _cmd_convert_comfyquant(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Dequantize the community source and write the GGUF, inventory and manifest."""
+    resolved = _comfyquant_inputs(args, config)
+    if resolved is None:
+        return 1
+    source, settings = resolved
+    output = _comfyquant_output(args, source, settings)
+    manifest = comfyquant_mod.convert_comfyquant(
+        source,
+        output,
+        builder_oracle_path=settings["oracle"],
+        map_path=settings["map"],
+        quant_type=settings["quant_type"],
+        quant_workers=_quant_worker_count(args, config),
+        force=getattr(args, "force", False),
+        expect_sha256=getattr(args, "expect_sha256", None),
+    )
+    print(f"ltx25-comfyquant conversion/self-verify complete: {output}")
+    _print_comfyquant_manifest(manifest, output)
+    return 0
+
+
+def _cmd_verify_comfyquant(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Re-admit the source and re-check the committed GGUF against its manifest."""
+    resolved = _comfyquant_inputs(args, config)
+    if resolved is None:
+        return 1
+    source, settings = resolved
+    output = _comfyquant_output(args, source, settings)
+    if not output.is_file():
+        print(f"ltx25-comfyquant output GGUF not found: {output}", file=sys.stderr)
+        return 1
+    manifest = comfyquant_mod.verify_comfyquant(
+        source,
+        output,
+        builder_oracle_path=settings["oracle"],
+        map_path=settings["map"],
+        expect_sha256=getattr(args, "expect_sha256", None),
+    )
+    print(f"ltx25-comfyquant static self-verification passed: {output}")
+    _print_comfyquant_manifest(manifest, output)
+    return 0
+
+
+def _cmd_inspect_comfyquant(args: argparse.Namespace, config: dict[str, Any]) -> int:
+    """Dry-run the community source: fold its inventory and project its type counts."""
+    resolved = _comfyquant_inputs(args, config)
+    if resolved is None:
+        return 1
+    source, settings = resolved
+    output = comfyquant_mod.default_output_path(
+        settings["output_dir"], source, settings["quant_type"]
+    )
+    inventory_path = _resolve_path(
+        getattr(args, "inventory", None), comfyquant_mod.default_inventory_path(output)
+    )
+    inventory = comfyquant_mod.inspect_comfyquant(
+        source,
+        builder_oracle_path=settings["oracle"],
+        inventory_path=inventory_path,
+        expect_sha256=getattr(args, "expect_sha256", None),
+    )
+    policy, map_sha256 = comfyquant_mod.load_official_type_policy(settings["map"])
+    records = comfyquant_mod.records_for_inventory_and_policy(
+        inventory, policy, settings["quant_type"]
+    )
+    summary = inventory.quant_summary
+    print(f"ltx25-comfyquant inventory written: {inventory_path}")
+    print(f"  raw tensors      : {summary['raw_tensor_count']} {summary['raw_dtype_counts']}")
+    print(f"  logical tensors  : {summary['logical_tensor_count']} {summary['logical_kind_counts']}")
+    print(f"  marker variants  : {len(summary['marker_variants'])}")
+    print(f"  source SHA-256   : {inventory.source_sha256}")
+    print(f"  inventory SHA-256: {inventory.inventory_sha256}")
+    print(f"  official map     : {settings['map']} (SHA-256 {map_sha256})")
+    print(
+        f"  planned output   : {output} (--quant-type {settings['quant_type']}, "
+        f"type_counts {comfyquant_mod.type_counts(records)})"
+    )
+    return 0
+
+
 def cmd_inspect(args: argparse.Namespace, config: dict[str, Any]) -> int:
     """Write the canonical E3 inventory for the selected LTX 2.5/gemma4-ltx25 source."""
+    if _model(args) == "ltx25-comfyquant":
+        return _cmd_inspect_comfyquant(args, config)
     if not _ltx25_only(args, "inspect", allowed=_INSPECT_BUILD_MAP_MODELS):
         return 1
     if _model(args) == "gemma4-ltx25":
@@ -685,11 +860,12 @@ def build_parser() -> argparse.ArgumentParser:
     def add_model_option(command_parser: argparse.ArgumentParser) -> None:
         command_parser.add_argument(
             "--model",
-            choices=("ltx23", "ltx25", "gemma4-ltx25"),
+            choices=("ltx23", "ltx25", "gemma4-ltx25", "ltx25-comfyquant"),
             default="ltx23",
             help=(
                 "Frozen conversion profile (default: ltx23; ltx25 and gemma4-ltx25 "
-                "are explicit and gated)."
+                "are explicit and gated; ltx25-comfyquant admits a community "
+                "ComfyUI-quantized LTX 2.5 file structurally)."
             ),
         )
 
@@ -799,11 +975,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --model ltx25/gemma4-ltx25, replace an existing output only after temp self-verification.",
     )
     p_convert.add_argument(
+        "--quant-type",
+        choices=comfyquant_mod.QUANT_TYPES,
+        default=None,
+        help=(
+            "ltx25-comfyquant only: GGUF type for the official map's Q4_K rows "
+            '(default: config.toml [profiles."ltx25-comfyquant"].quant_type)'
+        ),
+    )
+    p_convert.add_argument(
         "--quant-workers",
         type=_quant_worker_argument,
         default=None,
         help="Q4_K/Q6_K workers: ltx23 default 1; ltx25/gemma4-ltx25 profile default 4 (range: 1-8)",
     )
+    p_convert.add_argument("--expect-sha256", default=None, help=_EXPECT_SHA_HELP)
     add_model_option(p_convert)
     p_convert.set_defaults(handler=cmd_convert)
 
@@ -837,6 +1023,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_verify.add_argument("--inventory", help="LTX 2.5 canonical inventory JSON path")
     p_verify.add_argument("--builder-oracle", help="LTX 2.5 pinned E2 builder-oracle JSON path")
+    p_verify.add_argument(
+        "--quant-type",
+        choices=comfyquant_mod.QUANT_TYPES,
+        default=None,
+        help=(
+            "ltx25-comfyquant only: selects the default --out file name; the type "
+            "policy that is actually verified comes from the manifest"
+        ),
+    )
+    p_verify.add_argument("--expect-sha256", default=None, help=_EXPECT_SHA_HELP)
     add_model_option(p_verify)
     p_verify.set_defaults(handler=cmd_verify)
 
@@ -852,6 +1048,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_inspect.add_argument("--st-path", help="Official LTX 2.5 source safetensors path")
     p_inspect.add_argument("--inventory", help="Output canonical inventory JSON path")
     p_inspect.add_argument("--builder-oracle", help="Pinned E2 builder-oracle JSON path")
+    p_inspect.add_argument(
+        "--quant-type",
+        choices=comfyquant_mod.QUANT_TYPES,
+        default=None,
+        help=(
+            "ltx25-comfyquant only: type policy to project in the dry-run "
+            '(default: config.toml [profiles."ltx25-comfyquant"].quant_type)'
+        ),
+    )
+    p_inspect.add_argument("--expect-sha256", default=None, help=_EXPECT_SHA_HELP)
     add_model_option(p_inspect)
     p_inspect.set_defaults(handler=cmd_inspect)
 

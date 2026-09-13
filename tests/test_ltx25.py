@@ -243,6 +243,7 @@ def test_cli_quant_worker_profile_defaults_are_frozen():
         cli.argparse.Namespace(model="ltx25", quant_workers=None),
         {"profiles": {"ltx25": {"quant_workers": 4}}},
     ) == 4
+    assert cli._quant_worker_count(cli.argparse.Namespace(model="ltx25-comfyquant", quant_workers=None), {"profiles": {"ltx25-comfyquant": {"quant_workers": 4}}}) == 4
 
 
 def test_ltx23_omitted_and_explicit_cli_paths_and_legacy_stages_match(tmp_path, monkeypatch):

@@ -64,6 +64,20 @@ quant_workers = 4 # bounded Q4_K/Q6_K tasks; CLI range is 1-8
 output_dir = "output"
 output_filename = "LTX-2.5-gemma4-12b-text-encoder-Q4_K_M.gguf"
 
+# Opt-in ltx25-comfyquant profile: a community redistribution of the same LTX 2.5
+# transformer whose linear weights were pre-quantized by ComfyUI-style tooling
+# (int8 ConvRot + asymmetric w4a8).  There is no source lock and no source path
+# here -- the file is community-built, so --st-path is always explicit and
+# admission is structural (config digest, key/shape oracle, format allowlist).
+# The approved official map below is read name/shape-only as the type policy and
+# is never written; its Q4_K rows are emitted as `quant_type`.
+[profiles."ltx25-comfyquant"]
+official_map_path   = "typemap/ltx25_conversion_map.json"
+builder_oracle_path = "typemap/ltx25_builder_oracle.json"
+output_dir          = "output"
+quant_workers       = 4
+quant_type          = "Q6_K" # Q6_K (default, lower added error) or Q4_K (official type layout)
+
 # PrunaVAED (pruned LTX-2.3 video VAE decoder) -- used by `convert-vae`.
 # The three pins below (revision / sha256 / expected_size) identify PrunaVAED v2
 # uniquely: v1 and v2 have byte-identical safetensors headers and differ only in
