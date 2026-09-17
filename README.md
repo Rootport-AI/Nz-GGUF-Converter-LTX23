@@ -257,19 +257,20 @@ Docs/          設計メモ等のドキュメント
 ## 変換実績
 
 このツールを使って変換したモデルと、そこまで確認できている範囲の記録です。
-Sulphur 2 base（Q4_K_M版）と10Erosは、実機で動画生成まで確認済みです。REDGraftも
-実機で生成まで通っており、残っているのは絵としての見た目を確かめる作業だけです。
+Sulphur 2 base（Q4_K_M版・Q6_K版とも）と10Erosは、実機で動画生成まで確認済みです。
+REDGraftも実機で生成まで通っており、残っているのは絵としての見た目を確かめる
+作業だけです。
 
 - Sulphur 2 base: 変換したGGUFは `https://huggingface.co/Rootport/Nz-Sulphur2` から
   ダウンロードできます。
 - Sulphur 2 base（Q6_K、`--quant-type Q6_K`）: 出力は `output\Sulphur-2-base-distil-Q6_K.gguf`
   （大きさは上の「LTX 2.3のファインチューンをQ6_Kで変換する」の表にあるQ6_Kの値、
   SHA-256は `85eb100d` で始まる値）です。pytest・構造検証・
-  対照検証・bf16原本に対する数値比較・E2E段階Aのすべてに合格し、
-  `Nz-Videomni\models\LTX23\Weights\` への配置（同一ボリューム内ハードリンク）も
-  済んでいます。実機（GPU）での読み込み・動画生成はまだ確認していません
-  （**絵としての見た目の評価はオーナーが行います**）。数値と手順は
-  `Docs/VERIFICATION.md` の「9. Sulphur-2-base の Q6_K 変換の検証記録」を参照してください。
+  対照検証・bf16原本に対する数値比較・E2E段階A・実機（GPU）での読み込みと
+  文章からの動画生成のすべてに合格し、`Nz-Videomni\models\LTX23\Weights\` への
+  配置（同一ボリューム内ハードリンク）も済んでいます。**絵としての見た目の評価
+  だけがオーナーの担当として残っています。** 数値と手順は`Docs/VERIFICATION.md`の
+  「9. Sulphur-2-base の Q6_K 変換の検証記録」を参照してください。
 - 10Eros: 変換に成功しています。
 - REDGraft（コミュニティ製の量子化済みLTX 2.5・`--model ltx25-comfyquant`）: `Q6_K` で
   変換済みです。出力の大きさは上の「コミュニティ製の量子化済みLTX 2.5モデルの変換」の
