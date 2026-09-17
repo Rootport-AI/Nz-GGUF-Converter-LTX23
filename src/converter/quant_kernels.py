@@ -60,6 +60,10 @@ TYPE_SIZE = {
     "Q6_K": QK_K // 2 + QK_K // 4 + QK_K // 16 + 2,       # 210
 }
 
+# The K-quant target types this module can write (single definition; the
+# converter pipeline imports this instead of keeping its own copy).
+KQUANT_TYPES = ("Q4_K", "Q5_K", "Q6_K")
+
 _F32 = np.float32
 
 

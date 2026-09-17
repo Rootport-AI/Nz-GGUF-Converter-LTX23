@@ -263,7 +263,7 @@ def test_ltx23_omitted_and_explicit_cli_paths_and_legacy_stages_match(tmp_path, 
     monkeypatch.setattr(
         cli.convert_mod,
         "convert",
-        lambda st, tm, out, reference_expected=True, quant_workers=1: calls.append(
+        lambda st, tm, out, reference_expected=True, quant_workers=1, quant_type=None: calls.append(
             (Path(st), Path(tm), Path(out), reference_expected, quant_workers)
         )
         or Path(out),

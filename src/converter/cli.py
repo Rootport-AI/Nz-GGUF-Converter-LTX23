@@ -354,6 +354,24 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
     if reference_expected is None:
         reference_expected = True
 
+    quant_type = getattr(args, "quant_type", None)
+    if quant_type is not None:
+        if quant_type not in typemap_mod.UNIFORM_QUANT_TYPES:
+            print(
+                f"--quant-type {quant_type} is not supported for --model ltx23; "
+                f"accepted: {', '.join(typemap_mod.UNIFORM_QUANT_TYPES)}",
+                file=sys.stderr,
+            )
+            return 1
+        if not getattr(args, "out", None):
+            print(
+                "--quant-type requires an explicit --out for --model ltx23 "
+                "(so the default Q4_K_M output file is never overwritten with "
+                f"{quant_type} content)",
+                file=sys.stderr,
+            )
+            return 1
+
     if not st_path.is_file():
         print(f"Source safetensors not found: {st_path}", file=sys.stderr)
         return 1
@@ -373,6 +391,7 @@ def cmd_convert(args: argparse.Namespace, config: dict[str, Any]) -> int:
         out_path,
         reference_expected=reference_expected,
         quant_workers=_quant_worker_count(args, config),
+        quant_type=quant_type,
     )
     print(f"Done: {result}")
     return 0
@@ -528,6 +547,15 @@ def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
         getattr(args, "reference", None), Path(config["reference"]["gguf_path"])
     )
 
+    quant_type = getattr(args, "quant_type", None)
+    if quant_type is not None and quant_type not in typemap_mod.UNIFORM_QUANT_TYPES:
+        print(
+            f"--quant-type {quant_type} is not supported for --model ltx23; "
+            f"accepted: {', '.join(typemap_mod.UNIFORM_QUANT_TYPES)}",
+            file=sys.stderr,
+        )
+        return 1
+
     if not reference_path.is_file():
         print(f"Reference GGUF not found: {reference_path}", file=sys.stderr)
         return 1
@@ -535,7 +563,7 @@ def cmd_verify(args: argparse.Namespace, config: dict[str, Any]) -> int:
         print(f"Output GGUF not found: {output_path}", file=sys.stderr)
         return 1
 
-    report = verify_mod.verify_structure(output_path, reference_path)
+    report = verify_mod.verify_structure(output_path, reference_path, quant_type=quant_type)
     print(report.summary())
     return 0 if report.passed else 1
 
@@ -934,7 +962,11 @@ def build_parser() -> argparse.ArgumentParser:
     # -- convert -------------------------------------------------------------
     p_convert = subparsers.add_parser(
         "convert",
-        help="Convert the source safetensors file to a Q4_K_M GGUF using the typemap.",
+        help=(
+            "Convert the source safetensors file to a GGUF using the typemap "
+            "(Q4_K_M by default; --quant-type Q6_K rewrites the typemap's "
+            "K-quant rows to one uniform type)."
+        ),
         description=(
             "Stream-convert the source safetensors file into a GGUF, one "
             "tensor at a time, following the ordered typemap."
@@ -978,7 +1010,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=comfyquant_mod.QUANT_TYPES,
         default=None,
         help=(
-            "ltx25-comfyquant only: GGUF type for the official map's Q4_K rows "
+            "ltx23: rewrite every K-quant row of the typemap to this type "
+            "(Q6_K only; requires --out). "
+            "ltx25-comfyquant: GGUF type for the official map's Q4_K rows "
             '(default: config.toml [profiles."ltx25-comfyquant"].quant_type)'
         ),
     )
@@ -1027,7 +1061,9 @@ def build_parser() -> argparse.ArgumentParser:
         choices=comfyquant_mod.QUANT_TYPES,
         default=None,
         help=(
-            "ltx25-comfyquant only: selects the default --out file name; the type "
+            "ltx23: verify against the reference with every K-quant row folded "
+            "to this type (Q6_K only) -- use it for an output converted the same way. "
+            "ltx25-comfyquant: selects the default --out file name; the type "
             "policy that is actually verified comes from the manifest"
         ),
     )

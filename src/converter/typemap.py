@@ -28,6 +28,8 @@ from typing import Any
 
 from gguf import GGUFReader
 
+from .quant_kernels import KQUANT_TYPES
+
 EXPECTED_TOTAL = 4444
 EXPECTED_TYPE_COUNTS: dict[str, int] = {
     "F32": 2700,
@@ -36,6 +38,13 @@ EXPECTED_TYPE_COUNTS: dict[str, int] = {
     "BF16": 112,
     "Q5_K": 68,
 }
+
+# Types accepted by the ltx23 "rewrite every K-quant row to one type" option.
+# Only Q6_K is allowed: it is the only K-quant type that is not coarser than any
+# row of the reference typemap, so a uniform rewrite can only add precision.
+# Q4_K would silently demote the reference's Q5_K/Q6_K rows, producing a
+# degraded file that the (type-folding) structural verification would then pass.
+UNIFORM_QUANT_TYPES: tuple[str, ...] = ("Q6_K",)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.toml"
@@ -77,6 +86,32 @@ def _type_counts(records: list[dict[str, Any]]) -> dict[str, int]:
     for rec in records:
         ggml_type = rec["ggml_type"]
         counts[ggml_type] = counts.get(ggml_type, 0) + 1
+    return counts
+
+
+def expected_type_counts(quant_type: str | None) -> dict[str, int]:
+    """Return the per-type tensor counts the reference typemap is expected to have.
+
+    With ``quant_type=None`` this is a copy of :data:`EXPECTED_TYPE_COUNTS`.
+    With a uniform quantization type (see :data:`UNIFORM_QUANT_TYPES`) the three
+    K-quant entries are folded into a single ``quant_type`` entry, which is what
+    the typemap looks like after ``convert.rewrite_kquant_rows``; the F32/BF16
+    rows are never rewritten and keep their counts.
+    """
+    counts = dict(EXPECTED_TYPE_COUNTS)
+    if quant_type is None:
+        return counts
+
+    if quant_type not in UNIFORM_QUANT_TYPES:
+        raise ValueError(
+            f"unsupported uniform quantization type {quant_type!r}; "
+            f"accepted: {', '.join(UNIFORM_QUANT_TYPES)}"
+        )
+
+    folded = 0
+    for name in KQUANT_TYPES:
+        folded += counts.pop(name, 0)
+    counts[quant_type] = folded
     return counts
 
 

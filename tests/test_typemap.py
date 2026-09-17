@@ -7,11 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from converter.convert import rewrite_kquant_rows
 from converter.typemap import (
     EXPECTED_TOTAL,
     EXPECTED_TYPE_COUNTS,
     audit,
     classify_by_rule,
+    expected_type_counts,
     extract_typemap,
     load_typemap,
     save_typemap,
@@ -167,3 +169,58 @@ def test_classify_by_rule_middle_blocks_to_v_and_ff2_are_q6k():
 def test_classify_by_rule_default_is_q4k():
     assert classify_by_rule("transformer_blocks.10.attn1.to_q.weight", [4096, 4096]) == "Q4_K"
     assert classify_by_rule("transformer_blocks.10.ff.net.0.proj.weight", [16384, 4096]) == "Q4_K"
+
+
+# ---------------------------------------------------------------------------
+# uniform K-quant rewrite (--quant-type Q6_K for the ltx23 profile)
+# ---------------------------------------------------------------------------
+# Q6_K stores one 256-element super-block in 210 bytes.
+_Q6_K_TYPE_SIZE = 210
+
+
+def test_expected_type_counts_none_is_a_copy_of_the_reference_counts():
+    counts = expected_type_counts(None)
+    assert counts == EXPECTED_TYPE_COUNTS
+
+    # a copy, not the module constant itself
+    counts["F32"] = -1
+    assert EXPECTED_TYPE_COUNTS["F32"] == 2700
+
+
+def test_expected_type_counts_q6k_folds_every_kquant_row():
+    assert expected_type_counts("Q6_K") == {"F32": 2700, "Q6_K": 1632, "BF16": 112}
+
+
+def test_expected_type_counts_rejects_types_outside_uniform_quant_types():
+    # Q4_K is a valid GGML type but would *demote* the reference's Q5_K/Q6_K
+    # rows, so the ltx23 uniform rewrite refuses it just like an unknown type.
+    with pytest.raises(ValueError, match="Q4_K"):
+        expected_type_counts("Q4_K")
+    with pytest.raises(ValueError, match="Q8_0"):
+        expected_type_counts("Q8_0")
+
+
+def test_committed_typemap_rewritten_to_q6k_matches_expected_counts():
+    typemap_json = _typemap_json_path()
+    if not typemap_json.exists():
+        pytest.skip("typemap JSON artifact not generated yet")
+
+    original = load_typemap(typemap_json)
+    rewritten = rewrite_kquant_rows(original, "Q6_K")
+
+    counts: dict[str, int] = {}
+    for rec in rewritten:
+        counts[rec["ggml_type"]] = counts.get(rec["ggml_type"], 0) + 1
+    assert counts == expected_type_counts("Q6_K")
+
+    kquant_rows = 0
+    for old, new in zip(original, rewritten):
+        if old["ggml_type"] in ("Q4_K", "Q5_K", "Q6_K"):
+            kquant_rows += 1
+            assert new["ggml_type"] == "Q6_K"
+            assert new["nbytes"] == old["n_elements"] // 256 * _Q6_K_TYPE_SIZE
+            assert new["name"] == old["name"]
+            assert new["shape_logical"] == old["shape_logical"]
+        else:
+            assert new == old
+    assert kquant_rows == 1632

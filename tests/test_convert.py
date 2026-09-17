@@ -24,8 +24,15 @@ import gguf.quants as gq
 import numpy as np
 import pytest
 
-from converter.convert import _SafetensorsRaw, _register_tensor_info, _tensor_payload, convert
-from converter.typemap import EXPECTED_TYPE_COUNTS, save_typemap
+from converter.convert import (
+    _SafetensorsRaw,
+    _register_tensor_info,
+    _tensor_payload,
+    convert,
+    rewrite_kquant_rows,
+)
+from converter.quant_kernels import quantize
+from converter.typemap import EXPECTED_TYPE_COUNTS, load_typemap, save_typemap
 
 # --------------------------------------------------------------------------
 # helpers
@@ -320,3 +327,74 @@ def test_skip_prefixes_are_ignored_not_written(tmp_path):
     names = {t.name for t in rd.tensors}
     assert not any(n.startswith(("vae.", "audio_vae.")) for n in names)
     assert len(names) == len(_DEFAULT_SPECS)
+
+
+# --------------------------------------------------------------------------
+# uniform K-quant rewrite (convert(..., quant_type="Q6_K"))
+# --------------------------------------------------------------------------
+def test_convert_quant_type_q6k_rewrites_every_kquant_row(tmp_path):
+    st, tm, out, ground = _build(tmp_path)
+    convert(st, tm, out, reference_expected=False, quant_type="Q6_K")
+
+    rd = gguf.GGUFReader(out)
+    by_name = {t.name: t for t in rd.tensors}
+    assert len(rd.tensors) == len(_DEFAULT_SPECS)
+
+    for name, ggml_type, shape in _DEFAULT_SPECS:
+        t = by_name[name]
+        expected_type = "Q6_K" if ggml_type in ("Q4_K", "Q5_K", "Q6_K") else ggml_type
+        assert t.tensor_type.name == expected_type, name
+        # the logical shape is unchanged by the rewrite
+        assert [int(d) for d in t.shape] == list(reversed(shape))
+
+        g = ground[name]
+        if expected_type == "Q6_K":
+            # bit-for-bit identical to quantizing the same canonical values
+            expected_payload = quantize(g["canon"], "Q6_K")
+            assert np.asarray(t.data).tobytes() == expected_payload.tobytes(), name
+        elif ggml_type == "F32":
+            assert np.array_equal(np.asarray(t.data).reshape(shape), g["canon"])
+        else:  # BF16 passthrough
+            assert t.data.tobytes() == g["bits"].astype("<u2").tobytes()
+
+
+def test_convert_quant_type_q6k_ok_with_reference_expected_true(tmp_path):
+    # The full-reference count guard is skipped for a fixture typemap (not 4444
+    # rows), exactly as it is without --quant-type.
+    st, tm, out, _ = _build(tmp_path)
+    convert(st, tm, out, reference_expected=True, quant_type="Q6_K")
+    assert os.path.isfile(out)
+
+
+def test_rewrite_kquant_rows_recomputes_nbytes_and_copies(tmp_path):
+    import copy
+
+    st, tm, out, _ = _build(tmp_path)
+    records = load_typemap(tm)
+    untouched = copy.deepcopy(records)
+
+    rewritten = rewrite_kquant_rows(records, "Q6_K")
+
+    # the input list and its dicts are never mutated
+    assert records == untouched
+    assert all(new is not old for new, old in zip(rewritten, records))
+
+    for new, old, (_, ggml_type, shape) in zip(rewritten, records, _DEFAULT_SPECS):
+        if ggml_type in ("Q4_K", "Q5_K", "Q6_K"):
+            assert new["ggml_type"] == "Q6_K"
+            assert new["nbytes"] == _nbytes(list(shape), "Q6_K")
+        else:
+            assert new == old
+
+
+def test_rewrite_kquant_rows_rejects_non_uniform_type(tmp_path):
+    st, tm, out, _ = _build(tmp_path)
+    records = load_typemap(tm)
+    with pytest.raises(ValueError, match="Q4_K"):
+        rewrite_kquant_rows(records, "Q4_K")
+
+
+def test_convert_rejects_non_uniform_quant_type(tmp_path):
+    st, tm, out, _ = _build(tmp_path)
+    with pytest.raises(ValueError, match="Q8_0"):
+        convert(st, tm, out, reference_expected=False, quant_type="Q8_0")

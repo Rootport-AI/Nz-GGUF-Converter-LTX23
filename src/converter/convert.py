@@ -1,4 +1,9 @@
-"""Two-pass, streaming safetensors -> GGUF conversion for LTX-2.3 (Q4_K_M).
+"""Two-pass, streaming safetensors -> GGUF conversion for LTX-2.3.
+
+By default the output follows the reference-derived Q4_K_M type map exactly
+(see :mod:`converter.typemap`).  Passing ``quant_type`` to :func:`convert`
+rewrites every K-quant row of that type map to one uniform type (``Q6_K`` only,
+see ``typemap.UNIFORM_QUANT_TYPES``); the F32/BF16 rows are never rewritten.
 
 This is the pipeline body that ties together the three helper modules:
 
@@ -57,8 +62,13 @@ from gguf.quants import quant_shape_to_byte_shape
 from tqdm import tqdm
 
 from .metadata import apply_kv, validate_metadata
-from .quant_kernels import quantize, validate_quant_workers
-from .typemap import EXPECTED_TOTAL, EXPECTED_TYPE_COUNTS, load_typemap
+from .quant_kernels import KQUANT_TYPES, quantize, validate_quant_workers
+from .typemap import (
+    EXPECTED_TOTAL,
+    UNIFORM_QUANT_TYPES,
+    expected_type_counts,
+    load_typemap,
+)
 
 # --------------------------------------------------------------------------
 # constants
@@ -69,9 +79,6 @@ DIFFUSION_PREFIX = "model.diffusion_model."
 # Source-model components that are *not* part of the diffusion GGUF and are
 # therefore skipped (recorded, never written).
 SKIP_PREFIXES = ("vae.", "audio_vae.", "vocoder.", "text_embedding_projection.")
-
-# K-quant target types (require float32 -> quantize()).
-_KQUANT_TYPES = ("Q4_K", "Q5_K", "Q6_K")
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_CONFIG_PATH = _PROJECT_ROOT / "config.toml"
@@ -302,7 +309,7 @@ def _register_tensor_info(writer: GGUFWriter, name: str, rec: dict[str, Any]) ->
         # 1 byte/element, no block structure: a byte-identical passthrough type
         # (used for sidecar payloads gguf-py has no U8 writer type for).
         writer.add_tensor_info(name, shape_logical, np.dtype(np.int8), nbytes)
-    elif ggml_type_name in _KQUANT_TYPES:
+    elif ggml_type_name in KQUANT_TYPES:
         # uint8 dtype -> writer recovers logical shape from the byte shape.
         writer.add_tensor_info(name, list(byte_shape), np.dtype(np.uint8), nbytes, raw_dtype=qt)
     else:
@@ -328,7 +335,7 @@ def _tensor_payload(
         return reader.get_bf16_bytes(raw_key)
     if ggml_type_name == "I8":
         return reader.get_raw_bytes(raw_key)
-    if ggml_type_name in _KQUANT_TYPES:
+    if ggml_type_name in KQUANT_TYPES:
         f32 = reader.get_f32(raw_key, shape_logical)
         return quantize(
             f32,
@@ -342,14 +349,44 @@ def _tensor_payload(
 # --------------------------------------------------------------------------
 # public API
 # --------------------------------------------------------------------------
+def rewrite_kquant_rows(records: list[dict[str, Any]], quant_type: str) -> list[dict[str, Any]]:
+    """Return a copy of ``records`` with every K-quant row rewritten to ``quant_type``.
+
+    Rows whose ``ggml_type`` is one of :data:`converter.quant_kernels.KQUANT_TYPES`
+    get the new type and a recomputed ``nbytes``; all other rows (F32, BF16, ...)
+    are copied unchanged. The input list and its dicts are never mutated.
+
+    Only the types in ``typemap.UNIFORM_QUANT_TYPES`` are accepted.
+    """
+    if quant_type not in UNIFORM_QUANT_TYPES:
+        raise ValueError(
+            f"unsupported uniform quantization type {quant_type!r}; "
+            f"accepted: {', '.join(UNIFORM_QUANT_TYPES)}"
+        )
+
+    rewritten: list[dict[str, Any]] = []
+    for rec in records:
+        new_rec = dict(rec)
+        if new_rec["ggml_type"] in KQUANT_TYPES:
+            _, nbytes = _byte_shape_and_nbytes(list(new_rec["shape_logical"]), quant_type)
+            new_rec["ggml_type"] = quant_type
+            new_rec["nbytes"] = nbytes
+        rewritten.append(new_rec)
+    return rewritten
+
+
 def convert(
     st_path: str | Path,
     typemap_path: str | Path,
     out_path: str | Path,
     reference_expected: bool = True,
     quant_workers: int = 1,
+    quant_type: str | None = None,
 ) -> Path:
-    """Convert a safetensors LTX-2.3 diffusion model to a Q4_K_M GGUF.
+    """Convert a safetensors LTX-2.3 diffusion model to a GGUF.
+
+    The typemap decides every tensor's target type; the default typemap is the
+    reference-derived Q4_K_M one.
 
     Args:
         st_path: source safetensors file.
@@ -360,6 +397,10 @@ def convert(
             per-type counts match the known reference distribution. Set False to
             convert an arbitrary (e.g. fixture or partial) typemap without that
             extra cross-check.
+        quant_type: when given, rewrite every K-quant row of the typemap to this
+            one type (``Q6_K`` only, see ``typemap.UNIFORM_QUANT_TYPES``) before
+            converting; F32/BF16 rows are left alone. ``None`` keeps the
+            typemap's own types.
 
     Returns:
         The output GGUF path.
@@ -371,16 +412,19 @@ def convert(
 
     # -- preparation ----------------------------------------------------
     records = load_typemap(typemap_path)
+    if quant_type is not None:
+        records = rewrite_kquant_rows(records, quant_type)
     typemap_names = [rec["name"] for rec in records]
 
     if reference_expected and len(records) == EXPECTED_TOTAL:
+        expected_counts = expected_type_counts(quant_type)
         counts: dict[str, int] = {}
         for rec in records:
             counts[rec["ggml_type"]] = counts.get(rec["ggml_type"], 0) + 1
-        if counts != EXPECTED_TYPE_COUNTS:
+        if counts != expected_counts:
             raise ValueError(
                 f"typemap type counts {counts} != known reference "
-                f"{EXPECTED_TYPE_COUNTS} (reference_expected=True)"
+                f"{expected_counts} (reference_expected=True)"
             )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)

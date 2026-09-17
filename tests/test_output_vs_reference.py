@@ -26,6 +26,8 @@ import gguf
 import numpy as np
 import pytest
 
+from converter.convert import _byte_shape_and_nbytes
+from converter.quant_kernels import quantize
 from converter.verify import _load_config, resolve_paths, verify_structure
 
 # Default assumes this repo and Nz-Videomni (the backend) are cloned as
@@ -116,7 +118,10 @@ def _write_gguf(
     """Build a small GGUF file at ``path`` with GGUFWriter and return its path.
 
     ``tensors`` maps tensor name -> numpy array (dtype determines the GGML
-    type GGUFWriter tags it with, e.g. float32 -> F32, float16 -> F16).
+    type GGUFWriter tags it with, e.g. float32 -> F32, float16 -> F16) or to a
+    K-quant spec ``(uint8_payload, byte_shape, GGMLQuantizationType)`` as
+    produced by :func:`_kquant_tensor` (GGUFWriter recovers the logical shape
+    from the byte shape).
     ``metadata`` maps the four string KV keys to their values.
     """
     tensors = dict(DEFAULT_TENSORS if tensors is None else tensors)
@@ -136,7 +141,11 @@ def _write_gguf(
             writer.add_string(key, value)
 
     for name, arr in tensors.items():
-        writer.add_tensor(name, arr)
+        if isinstance(arr, tuple):
+            payload, byte_shape, raw_dtype = arr
+            writer.add_tensor(name, payload, raw_shape=byte_shape, raw_dtype=raw_dtype)
+        else:
+            writer.add_tensor(name, arr)
 
     writer.write_header_to_file()
     writer.write_kv_data_to_file()
@@ -329,6 +338,71 @@ def test_synthetic_file_size_ratio_detected(tmp_path):
 
     assert not report.passed
     assert "file_size_ratio" in report.failed_checks
+
+
+# --- uniform K-quant folding (--quant-type Q6_K) ---------------------------
+# 16 x 512 = 8192 elements = 32 super-blocks, so the same tensor costs
+# 32 * 144 = 4608 bytes as Q4_K and 32 * 210 = 6720 bytes as Q6_K. That 2112-byte
+# difference on an otherwise ~62 KB file is ~3.4% -- far outside the +/-1%
+# file-size tolerance, so the expected pass/fail outcome is unambiguous in both
+# directions (and both sizes are multiples of 32, so alignment padding is nil).
+_K_SOURCE = np.random.default_rng(7).standard_normal((16, 512)).astype(np.float32)
+
+
+def _kquant_tensor(arr, ggml_type):
+    """Return a ``_write_gguf`` tensor spec: ``arr`` quantized to ``ggml_type``."""
+    byte_shape, _ = _byte_shape_and_nbytes(list(arr.shape), ggml_type)
+    return quantize(arr, ggml_type), list(byte_shape), gguf.GGMLQuantizationType[ggml_type]
+
+
+def _kquant_tensors(ggml_type):
+    """The default tensor set plus one K-quant tensor of ``ggml_type``."""
+    tensors = dict(DEFAULT_TENSORS)
+    tensors["k.weight"] = _kquant_tensor(_K_SOURCE, ggml_type)
+    return tensors
+
+
+def test_synthetic_q6k_output_passes_only_with_quant_type(tmp_path):
+    ref_path = _write_gguf(tmp_path / "ref.gguf", tensors=_kquant_tensors("Q4_K"))
+    out_path = _write_gguf(tmp_path / "out.gguf", tensors=_kquant_tensors("Q6_K"))
+
+    # Without quant_type a uniformly-rewritten output is just a type + size diff.
+    report = verify_structure(out_path, ref_path)
+    assert not report.passed
+    _only_check_failed(report, "tensor_types_shapes", also_allow=("file_size_ratio",))
+    assert "file_size_ratio" in report.failed_checks
+    assert any("k.weight" in issue for issue in report.mismatches["tensor_types_shapes"])
+
+    # With it, the reference's K-quant row is expected to be Q6_K and the size is
+    # compared against the projected all-Q6_K reference size.
+    folded = verify_structure(out_path, ref_path, quant_type="Q6_K")
+    assert folded.passed, folded.summary()
+
+
+def test_synthetic_quant_type_still_rejects_an_unrewritten_output(tmp_path):
+    # The folding must not weaken the checks: an output that was *not* converted
+    # with the uniform rewrite (still Q4_K) has to fail both folded checks.
+    tensors = _kquant_tensors("Q4_K")
+    ref_path = _write_gguf(tmp_path / "ref.gguf", tensors=tensors)
+    out_path = _write_gguf(tmp_path / "out.gguf", tensors=tensors)
+
+    report = verify_structure(out_path, ref_path, quant_type="Q6_K")
+
+    assert not report.passed
+    _only_check_failed(report, "tensor_types_shapes", also_allow=("file_size_ratio",))
+    assert "file_size_ratio" in report.failed_checks
+    assert any(
+        "output=Q4_K" in issue and "expected=Q6_K" in issue
+        for issue in report.mismatches["tensor_types_shapes"]
+    )
+
+
+def test_verify_structure_rejects_non_uniform_quant_type(tmp_path):
+    ref_path = _write_gguf(tmp_path / "ref.gguf", tensors=_kquant_tensors("Q4_K"))
+    out_path = _write_gguf(tmp_path / "out.gguf", tensors=_kquant_tensors("Q4_K"))
+
+    with pytest.raises(ValueError, match="Q4_K"):
+        verify_structure(out_path, ref_path, quant_type="Q4_K")
 
 
 # ---------------------------------------------------------------------------

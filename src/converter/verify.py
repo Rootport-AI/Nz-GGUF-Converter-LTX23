@@ -9,7 +9,10 @@ on to load and run the model:
 
 1. Tensor count (output and reference must have the same number of tensors).
 2. Tensor name set *and* order (an exact, position-by-position match).
-3. Each tensor's GGML quantization type (``tensor_type``) and shape.
+3. Each tensor's GGML quantization type (``tensor_type``) and shape. When
+   ``quant_type`` is given, the reference's K-quant types are folded into that
+   one type before comparing (the output was converted with the same uniform
+   rewrite); every other type still has to match the reference exactly.
 4. The KV metadata key set (order-independent), each key's GGUF value type,
    and the fixed values ``general.architecture == "ltxv"``,
    ``general.quantization_version == 2``, ``general.file_type == 15``.
@@ -17,7 +20,10 @@ on to load and run the model:
    must be valid JSON with a top-level ``"transformer"`` key -- the backend
    needs that to build the model.
 5. ``general.alignment`` must be absent from both files.
-6. Output file size must be within +/-1% of the reference file size.
+6. Output file size must be within +/-1% of the reference file size. When
+   ``quant_type`` is given, the comparison is against a *projected* reference
+   size: the reference size with every K-quant tensor re-costed at that one
+   type (32-byte GGUF alignment included).
 7. A best-effort dequantization sanity check: a handful of K-quant tensors
    from the output are dequantized (``gguf.quants.dequantize``) and checked
    for exceptions / NaN / Inf.
@@ -37,7 +43,11 @@ from typing import Union
 
 import numpy as np
 from gguf import GGUFReader
+from gguf.constants import GGML_QUANT_SIZES, GGMLQuantizationType
 from gguf.quants import dequantize
+
+from .quant_kernels import KQUANT_TYPES
+from .typemap import UNIFORM_QUANT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +70,11 @@ _MAX_DEQUANT_SAMPLES = 8
 
 # Output file size must be within this fraction of the reference file size.
 _FILE_SIZE_TOLERANCE = 0.01
+
+# GGUF's default tensor-data alignment. ``general.alignment`` must be absent
+# from both files (see _check_no_general_alignment), so this is the padding the
+# writer applied and the value the projected size calculation must use.
+_GGUF_DEFAULT_ALIGNMENT = 32
 
 
 @dataclass
@@ -140,7 +155,11 @@ def _check_tensor_names_order(out_reader: GGUFReader, ref_reader: GGUFReader) ->
     return issues
 
 
-def _check_tensor_types_shapes(out_reader: GGUFReader, ref_reader: GGUFReader) -> list[str]:
+def _check_tensor_types_shapes(
+    out_reader: GGUFReader,
+    ref_reader: GGUFReader,
+    quant_type: str | None = None,
+) -> list[str]:
     issues: list[str] = []
     ref_by_name = {t.name: t for t in ref_reader.tensors}
     for out_t in out_reader.tensors:
@@ -148,10 +167,19 @@ def _check_tensor_types_shapes(out_reader: GGUFReader, ref_reader: GGUFReader) -
         if ref_t is None:
             continue  # already reported by _check_tensor_names_order
 
-        if out_t.tensor_type != ref_t.tensor_type:
+        ref_type_name = ref_t.tensor_type.name
+        folded = quant_type is not None and ref_type_name in KQUANT_TYPES
+        expected_type_name = quant_type if folded else ref_type_name
+
+        if out_t.tensor_type.name != expected_type_name:
+            expectation = (
+                f"expected={expected_type_name} (reference={ref_type_name})"
+                if folded
+                else f"reference={ref_type_name}"
+            )
             issues.append(
                 f"{out_t.name}: tensor_type mismatch: "
-                f"output={out_t.tensor_type.name} reference={ref_t.tensor_type.name}"
+                f"output={out_t.tensor_type.name} {expectation}"
             )
 
         out_shape = [int(d) for d in out_t.shape]
@@ -242,17 +270,59 @@ def _check_no_general_alignment(out_reader: GGUFReader, ref_reader: GGUFReader) 
     return issues
 
 
-def _check_file_size(output_path: Union[str, Path], reference_path: Union[str, Path]) -> list[str]:
+def _align(nbytes: int) -> int:
+    """Round ``nbytes`` up to GGUF's default tensor-data alignment."""
+    return (nbytes + _GGUF_DEFAULT_ALIGNMENT - 1) // _GGUF_DEFAULT_ALIGNMENT * _GGUF_DEFAULT_ALIGNMENT
+
+
+def _projected_reference_size(ref_size: int, ref_reader: GGUFReader, quant_type: str) -> int:
+    """Return ``ref_size`` re-costed with every K-quant tensor stored as ``quant_type``.
+
+    Only the tensor payloads change size; the header, KV block and tensor-info
+    block do not depend on the quantization type. Each payload is padded to the
+    file's alignment, so the aligned sizes are what the delta is computed from.
+    """
+    block_size, type_size = GGML_QUANT_SIZES[GGMLQuantizationType[quant_type]]
+    projected = ref_size
+    for tensor in ref_reader.tensors:
+        if tensor.tensor_type.name not in KQUANT_TYPES:
+            continue
+        old_nbytes = int(tensor.n_bytes)
+        new_nbytes = int(tensor.n_elements) // block_size * type_size
+        projected += _align(new_nbytes) - _align(old_nbytes)
+    return projected
+
+
+def _check_file_size(
+    output_path: Union[str, Path],
+    reference_path: Union[str, Path],
+    ref_reader: GGUFReader,
+    quant_type: str | None = None,
+) -> list[str]:
     out_size = Path(output_path).stat().st_size
     ref_size = Path(reference_path).stat().st_size
     if ref_size == 0:
         return ["reference file size is 0 bytes; cannot compute a size ratio"]
 
-    ratio = abs(out_size - ref_size) / ref_size
+    if quant_type is None:
+        ratio = abs(out_size - ref_size) / ref_size
+        if ratio > _FILE_SIZE_TOLERANCE:
+            return [
+                f"file size differs by {ratio:.2%} (tolerance {_FILE_SIZE_TOLERANCE:.0%}): "
+                f"output={out_size} bytes, reference={ref_size} bytes"
+            ]
+        return []
+
+    projected = _projected_reference_size(ref_size, ref_reader, quant_type)
+    if projected == 0:
+        return ["projected reference file size is 0 bytes; cannot compute a size ratio"]
+
+    ratio = abs(out_size - projected) / projected
     if ratio > _FILE_SIZE_TOLERANCE:
         return [
             f"file size differs by {ratio:.2%} (tolerance {_FILE_SIZE_TOLERANCE:.0%}): "
-            f"output={out_size} bytes, reference={ref_size} bytes"
+            f"output={out_size} bytes, projected={projected} bytes for all-{quant_type} "
+            f"K-quant rows (reference={ref_size} bytes)"
         ]
     return []
 
@@ -294,6 +364,7 @@ def _check_dequant_sanity(out_reader: GGUFReader) -> list[str]:
 def verify_structure(
     output_gguf_path: Union[str, Path],
     reference_gguf_path: Union[str, Path],
+    quant_type: str | None = None,
 ) -> VerifyReport:
     """Compare ``output_gguf_path``'s structure against ``reference_gguf_path``.
 
@@ -301,20 +372,33 @@ def verify_structure(
     even for multi-gigabyte files) and runs every check described in the
     module docstring. Returns a :class:`VerifyReport`; it never raises for
     structural mismatches (only for I/O errors opening the files themselves).
+
+    ``quant_type`` describes how the output was converted: when given (``Q6_K``
+    only, see ``typemap.UNIFORM_QUANT_TYPES``), the reference's K-quant rows are
+    expected to be that one type in the output, and the file-size comparison
+    uses the correspondingly projected reference size.
     """
+    if quant_type is not None and quant_type not in UNIFORM_QUANT_TYPES:
+        raise ValueError(
+            f"unsupported uniform quantization type {quant_type!r}; "
+            f"accepted: {', '.join(UNIFORM_QUANT_TYPES)}"
+        )
+
     out_reader = GGUFReader(str(output_gguf_path))
     ref_reader = GGUFReader(str(reference_gguf_path))
 
     mismatches: dict[str, list[str]] = {
         "tensor_count": _check_tensor_count(out_reader, ref_reader),
         "tensor_names_order": _check_tensor_names_order(out_reader, ref_reader),
-        "tensor_types_shapes": _check_tensor_types_shapes(out_reader, ref_reader),
+        "tensor_types_shapes": _check_tensor_types_shapes(out_reader, ref_reader, quant_type),
         "kv_keys": _check_kv_keys(out_reader, ref_reader),
         "kv_types": _check_kv_types(out_reader, ref_reader),
         "kv_fixed_values": _check_kv_fixed_values(out_reader),
         "kv_config_json": _check_config_json(out_reader),
         "general_alignment_absent": _check_no_general_alignment(out_reader, ref_reader),
-        "file_size_ratio": _check_file_size(output_gguf_path, reference_gguf_path),
+        "file_size_ratio": _check_file_size(
+            output_gguf_path, reference_gguf_path, ref_reader, quant_type
+        ),
         "dequant_sanity": _check_dequant_sanity(out_reader),
     }
 
