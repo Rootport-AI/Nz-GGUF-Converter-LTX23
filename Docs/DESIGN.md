@@ -20,8 +20,10 @@ GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量
 Hugging Face上でsafetensors形式（bf16、約43GB）でのみ配布されています。
 
 バックエンドの推論コード（`engine/gguf/loader_service.py` /
-`engine/gguf/quant_service.py`）は「参照GGUFと同じテンソル名・同じ量子化タイプ・
-同じKVメタデータ構造を持つGGUFファイル」を読み込む前提で書かれています。そのため
+`engine/gguf/quant_service.py`）は「参照GGUFと同じテンソル名・同じ並び順・
+同じKVメタデータ構造を持つGGUFファイル」を読み込む前提で書かれています（量子化
+タイプはテンソルごとに実行時に読んで復元するため、参照と一致している必要は
+ありません。2-2節の`--quant-type`）。そのため
 このツールのゴールは、**Sulphur-2-baseの重みの値を保ちながら、参照GGUFと構造的に
 瓜二つのGGUFを作ること**です。構造さえ揃えれば、バックエンド側のコードは一切
 変更せずにモデルを差し替えられます。
@@ -59,6 +61,16 @@ gguf-pyだけでは変換ツールを完成させられないということで�
 ための補助ツールです（`converter extract-typemap`実行時に自動で監査ログが出ます）。
 Sulphur-2-baseは参照GGUFと同じLTX-2.3アーキテクチャのファインチューンなので、
 テンソル名の集合が完全一致し、この転用が成立します。
+
+`--quant-type` オプション（`ltx23`のみ・値はQ6_Kだけを受け付けます）は、この
+typemapに対する**一律の置換規則**であって、第2のtypemapを作るものではありません。
+どのテンソルを量子化するか・どの順に書くかは、指定の有無にかかわらず引き続き
+参照GGUF由来のtypemapが唯一の正であり続けます。`--quant-type Q6_K` を渡すと、
+typemapのうちK量子化（Q4_K／Q5_K／Q6_Kのように256要素のブロック単位で重みを
+整数化する方式）の行だけを一律にQ6_Kへ書き換えます。F32・BF16の行は元のまま
+変わりません。受け付ける型をQ6_Kだけに絞っているのは、参照typemapのどの行よりも
+粗くならないK量子化タイプがQ6_Kだけだからです。Q4_Kを許すと、typemap上は
+Q5_K・Q6_Kだった行までQ4_Kに落ちた「劣化版」を`verify`が合格させてしまいます。
 
 ### 2-3. なぜ2パス・ストリーミング書き込みなのか
 
@@ -123,9 +135,15 @@ src/converter/
 ```
 
 依存の向きは一方向です。`convert.py`が`metadata.py`・`quant_kernels.py`・
-`typemap.py`を呼び出す側で、これらのモジュール自身は互いに依存しません。
-`verify.py`は変換処理から独立しており、出来上がったGGUFファイル2つ（出力と参照）
-だけを見て判定します。`convert_vae.py`はGGUF変換とは完全に独立していて、
+`typemap.py`を呼び出す側です。ただしこの3つのモジュール自身は互いに無関係では
+ありません。`typemap.py`は`quant_kernels.py`が定義する`KQUANT_TYPES`（K量子化
+タイプの一覧。Q4_K／Q5_K／Q6_K）を1箇所から取り込んでおり、`verify.py`も
+`quant_kernels.py`の`KQUANT_TYPES`と`typemap.py`の`UNIFORM_QUANT_TYPES`
+（`--quant-type`が受け付ける型の一覧）を取り込みます。型の定義については
+`quant_kernels.py`→`typemap.py`→`verify.py`という一方向の依存があり、循環は
+ありません。`verify.py`は変換処理そのものからは独立しており、出来上がった
+GGUFファイル2つ（出力と参照）だけを見て判定する構造は変わっていません。
+`convert_vae.py`はGGUF変換とは完全に独立していて、
 `convert.py`からはsafetensorsの生バイト読み出しクラス（`_SafetensorsRaw`）だけを
 借りています。
 

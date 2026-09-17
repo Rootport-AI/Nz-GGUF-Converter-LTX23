@@ -45,14 +45,14 @@ LTX 2.5 uses the reviewed profile default of four workers (1--8 accepted via
 
 このリポジトリは、Nz-Videomni（AviUtl2向けの動画生成システム）で使う**重みファイルの変換ツールをまとめて置く場所**です。名前にGGUFと入っていますが、扱うのはGGUF変換だけではありません。現在は次の2つの変換を収めています。
 
-1. **GGUF変換**（このツールの出発点）— safetensors（PyTorchの重みファイル形式）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）のQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）へ変換します。変換の系統は4つあり、`--model` で選びます。
-   - `ltx23`（既定）— LTX 2.3のファインチューンモデル「Sulphur 2 base」（約43GB）を約17.8GBへ。
+1. **GGUF変換**（このツールの出発点）— safetensors（PyTorchの重みファイル形式）を、GGUF（GPT-Generated Unified Format。llama.cpp系のツールで使われる量子化モデル形式）へ変換します。既定ではQ4_K_M（4bit量子化の一種。重みを4bitに圧縮しつつ精度劣化を抑える方式）へ変換します（`ltx25-comfyquant`だけは既定がQ6_Kです）。変換の系統は4つあり、`--model` で選びます。
+   - `ltx23`（既定）— LTX 2.3のファインチューンモデル「Sulphur 2 base」（約43GB）を約17.8GBへ。`--quant-type Q6_K` を付けると、型マップのK量子化行を全てQ6_Kにした約21.0GBの精度優先版も作れます（下記「LTX 2.3のファインチューンをQ6_Kで変換する」を参照）。
    - `ltx25` — LTX 2.5本体の映像生成モデル（約42GB）を約14.7GBへ。
    - `gemma4-ltx25` — LTX 2.5が使う文章理解モデル「Gemma 4」（約26GB）を約9.2GBへ。
    - `ltx25-comfyquant` — コミュニティ製の「すでに量子化されたLTX 2.5」を逆量子化して、公式版と同じ構造のGGUFへ作り直します（下記「コミュニティ製の量子化済みLTX 2.5モデルの変換」を参照）。
 2. **PrunaVAED変換**（`convert-vae`）— 枝刈り（pruning。寄与の小さいチャンネルを削ること）を施した映像VAEデコーダ「PrunaVAED」の配布ファイルから、デコーダ部分だけを取り出して約690MBのsafetensorsに作り直します。バックエンドがそのまま読み込める形（キー名の付け替え済み）で出力します。
 
-変換後のGGUFは、既存のバックエンド（Nz-Videomni）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じ構造・型マップに揃えることで、バックエンド側の推論コードを変更せずに差し替えられるようにします。
+変換後のGGUFは、既存のバックエンド（Nz-Videomni）が読み込んでいるLTX-2.3-22B-distilled-1.1-Q4_K_M.ggufと同じテンソル名・並び順・形状に揃えます。バックエンドは各テンソルに記録された量子化タイプを実行時に1本ずつ読んで逆量子化するため、量子化タイプ自体（Q4_K_MかQ6_Kかなど）が違っても、バックエンド側の推論コードは変更せずに差し替えられます。
 
 ### コミュニティ製の量子化済みLTX 2.5モデルの変換（`--model ltx25-comfyquant`）
 
@@ -100,6 +100,52 @@ run.bat self-verify --model ltx25-comfyquant --st-path <元のsafetensors>
 
 元のファイルは第三者が配布しているLTX 2.5の派生物で、LTX-2.xコミュニティライセンスの下にあります。**この系統の出力は自分で使うためだけのものです。再配布しないでください。** 入手元（Civitaiなど）の配布条件と上流ライセンスの遵守は、利用者の責任になります。
 
+### LTX 2.3のファインチューンをQ6_Kで変換する（`--quant-type Q6_K`）
+
+`ltx23`（既定の系統）は通常Q4_K_Mへ変換しますが、**精度を優先したい場合**は
+`--quant-type Q6_K` を付けることで、型マップ（参照GGUFから抽出した「テンソル名→
+量子化タイプ」の対応表）のうちK量子化（Q4_K／Q5_K／Q6_Kのように256要素のブロック
+単位で重みを整数化する方式）の行をすべてQ6_Kへ一律に書き換えた版を作れます。
+F32・BF16の行は変わりません。
+
+```
+run.bat convert --quant-type Q6_K --quant-workers 4 --out output\<出力ファイル名>-Q6_K.gguf
+run.bat verify  --quant-type Q6_K --out output\<出力ファイル名>-Q6_K.gguf
+```
+
+`convert` で `--quant-type` を付けるときは `--out` の指定が必須です。省略すると、
+既定のQ4_K_M出力名（例: `output\Sulphur-2-base-distil-Q4_K_M.gguf`）をQ6_Kの中身で
+上書きしてしまうため、それを防ぐための規則です。`verify` も同じ `--quant-type Q6_K`
+を渡すことで、参照GGUFのK量子化行をQ6_Kへ折り畳んだうえで型とサイズを照合します。
+
+出力サイズの目安（Sulphur 2 baseの場合。実測値は `Docs/VERIFICATION.md` の
+「9. Sulphur-2-base の Q6_K 変換の検証記録」を参照）:
+
+| 出力 | サイズ |
+|---|---|
+| Q4_K_M（既定） | 17,763,014,976バイト |
+| Q6_K（`--quant-type Q6_K`） | 21,006,399,808バイト |
+
+`general.file_type` のKVは既定のQ4_K_M用の値（15）のまま据え置きます。
+Nz-Videomniはこの値を読まないため実害はありませんが、**この出力の実際の型内訳は、
+ファイル名と本書・`Docs/VERIFICATION.md` にしか記録されません**（`ltx25-comfyquant`
+と違い、manifestファイルは書き出しません）。
+
+`--quant-type` の意味は系統によって異なります。`ltx25-comfyquant` では公式マップの
+Q4_K行をどの型で持つかを選ぶ指定（`Q4_K`が「公式GGUFと同一構造」を意味します）
+ですが、`ltx23` では型マップのK量子化行を一律に置き換える指定で、受け付ける型は
+Q6_Kだけです。
+
+できあがったGGUFの置き場所は、既存のQ4_K_M版と同じ `Nz-Videomni\models\LTX23\Weights\`
+直下です（下記「変換したGGUFの配置と選択」を参照）。既存のQ4_K_M版を上書きせず、
+別のファイル名で並べて置いてください。
+
+UIの快適上限マーカーはQ4_K_Mファイルを基準に較正されているため、Q6_K版を選んだ
+ときは楽観的に表示される可能性があります（LTX 2.5でQ6_Kのtransformerを使った
+実測では、除去段階の常駐VRAMピークが約1.03GiB増えました）。
+
+出力は自分で使うためのものです。再配布するかどうかはオーナー判断とします。
+
 ## セットアップ
 
 1. `setup.bat` をダブルクリック、またはコマンドプロンプトから実行してください。
@@ -116,7 +162,8 @@ run.bat self-verify --model ltx25-comfyquant --st-path <元のsafetensors>
 ```
 run.bat download          元のsafetensorsファイルをHugging Face Hubからダウンロードする
 run.bat extract-typemap   参照GGUF（config.tomlのreference.gguf_path）からテンソルの型・形状の対応表（typemap）を抽出する
-run.bat convert           safetensorsを読み込み、typemapに従ってQ4_K_M GGUFへ変換する
+run.bat convert           safetensorsを読み込み、typemapに従ってGGUFへ変換する
+                          （既定はQ4_K_M。`ltx23`は`--quant-type Q6_K`でQ6_K版も作れる）
 run.bat verify            生成したGGUFの構造・テンソル形状が参照GGUFと一致するか検証する
 run.bat all               上の4つ（download → extract-typemap → convert → verify）を順に実行する。
                           途中で失敗したらそこで止まる。typemapが既にある場合はextract-typemapを飛ばす
@@ -156,8 +203,9 @@ run.bat convert-vae
 GGUF変換の場合:
 
 - ダウンロードする元のsafetensors（Sulphur 2 base, bf16）: 約43GB
-- 変換後の出力GGUF（Q4_K_M）: 約16.5GB
-- 合計で60GB程度の空き容量を確保してから作業を始めてください。
+- 変換後の出力GGUF（Q4_K_M、既定）: 約16.5GB
+- 変換後の出力GGUF（Q6_K、`--quant-type Q6_K`使用時。`ltx23`のみ）: 約19.6GB（21,006,399,808バイト）
+- 既定のQ4_K_M変換だけなら合計60GB程度、`--quant-type Q6_K`も使うなら合計80GB程度の空き容量を確保してから作業を始めてください。
 
 PrunaVAED変換（`convert-vae`）の場合:
 
@@ -209,15 +257,24 @@ Docs/          設計メモ等のドキュメント
 ## 変換実績
 
 このツールを使って変換したモデルと、そこまで確認できている範囲の記録です。
-Sulphur 2 baseと10Erosは、実機で動画生成まで確認済みです。REDGraftも実機で生成まで
-通っており、残っているのは絵としての見た目を確かめる作業だけです。
+Sulphur 2 base（Q4_K_M版）と10Erosは、実機で動画生成まで確認済みです。REDGraftも
+実機で生成まで通っており、残っているのは絵としての見た目を確かめる作業だけです。
 
 - Sulphur 2 base: 変換したGGUFは `https://huggingface.co/Rootport/Nz-Sulphur2` から
   ダウンロードできます。
+- Sulphur 2 base（Q6_K、`--quant-type Q6_K`）: 出力は `output\Sulphur-2-base-distil-Q6_K.gguf`
+  （大きさは上の「LTX 2.3のファインチューンをQ6_Kで変換する」の表にあるQ6_Kの値、
+  SHA-256は `85eb100d` で始まる値）です。pytest・構造検証・
+  対照検証・bf16原本に対する数値比較・E2E段階Aのすべてに合格し、
+  `Nz-Videomni\models\LTX23\Weights\` への配置（同一ボリューム内ハードリンク）も
+  済んでいます。実機（GPU）での読み込み・動画生成はまだ確認していません
+  （**絵としての見た目の評価はオーナーが行います**）。数値と手順は
+  `Docs/VERIFICATION.md` の「9. Sulphur-2-base の Q6_K 変換の検証記録」を参照してください。
 - 10Eros: 変換に成功しています。
 - REDGraft（コミュニティ製の量子化済みLTX 2.5・`--model ltx25-comfyquant`）: `Q6_K` で
-  変換済みです。出力の大きさは上の「出力サイズの目安」の表にある `Q6_K` の値ちょうどで、
-  `self-verify` にも合格しました（出力のSHA-256は `66ed7bf1` で始まる値）。逆量子化した
+  変換済みです。出力の大きさは上の「コミュニティ製の量子化済みLTX 2.5モデルの変換」の
+  表にある `Q6_K` の値ちょうどで、`self-verify` にも合格しました（出力のSHA-256は
+  `66ed7bf1` で始まる値）。逆量子化した
   結果を公式版と層ごとに数値照合するゲートにも、全件合格しています。実機でも、読み込みと
   文章からの動画生成が完走しました（**絵としての見た目の評価だけが残っています**）。
   数値と手順は `Docs/VERIFICATION.md` の「8. ltx25-comfyquant」を参照してください。

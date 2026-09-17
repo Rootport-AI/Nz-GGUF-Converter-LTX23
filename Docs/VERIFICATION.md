@@ -8,7 +8,8 @@
 このドキュメントは、本リポジトリの変換ツールで実際に行った変換の実行結果と検証
 結果をまとめた記録です。1〜5節がSulphur-2-base、6節が10Eros v1.2（いずれもGGUF
 変換）、7節がPrunaVAEDデコーダ変換、8節がコミュニティ製の量子化済みLTX 2.5
-（`ltx25-comfyquant`）の記録です。
+（`ltx25-comfyquant`）、9節がSulphur-2-baseのQ6_K変換（`ltx23`の
+`--quant-type Q6_K`）の記録です。
 
 以下1〜5節は、Sulphur-2-base → GGUF（Q4_K_M）変換についての記録です。対象ファイル:
 
@@ -1077,3 +1078,240 @@ transformerの違いが出るのは除去（denoise）の場面で、Q6_Kのほ�
   同じファイルの `general_file_type_note` にもその旨を書いてあります。
 - **（解消済み・2026-09-13）** `comfy_quant` の本文は完全版で読みました。マーカー長の
   67/72の違いがJSONの書式の差であることも、実文の突き合わせで確かめています（8-4）。
+
+---
+
+## 9. Sulphur-2-base の Q6_K 変換の検証記録（2026-09-17）
+
+### 9-1. 対象と方針
+
+`ltx23`プロファイル（LTX 2.3のファインチューンモデルをGGUF化する系統）に、
+既存の`--quant-type`オプションを効かせる拡張を加えました。型マップ（参照GGUFから
+抽出した「テンソル名→GGML量子化タイプ」の対応表。DESIGN §2-2）のうち、K量子化
+（Q4_K／Q5_K／Q6_Kのように256要素のブロック単位で重みを整数化する方式）の行
+Q4_K 1,242本・Q5_K 68本・Q6_K 322本、合計1,632本を、指定した型へ一律に書き換える
+規則です。F32（2,700本）・BF16（112本）の行は変わりません。`ltx23`が受け付ける
+型はQ6_Kだけです（理由はDESIGN §2-2）。
+
+対象ファイル:
+
+- 変換元: `safetensors\sulphur_distil_bf16.safetensors`
+  （サイズ 46,139,885,414バイト、テンソル5,947本、すべてBF16。内訳は
+  `model.diffusion_model.*` 4,444本＋vae／audio_vae／vocoder／
+  text_embedding_projection 1,503本〔既存コードが読み飛ばす〕）
+- 出力: `output\Sulphur-2-base-distil-Q6_K.gguf`
+  （サイズ 21,006,399,808バイト＝見込みサイズと一致。既存のQ4_K_M版
+  `output\Sulphur-2-base-distil-Q4_K_M.gguf`〔17,763,014,976バイト〕の1.1826倍）
+  - SHA-256: `85eb100d097359f56ceaa75c63461fe6e5e9b384990c416dfc5074c34c5eba33`
+  - （参考）Q4_K_M版のSHA-256: `b6dfe813b25ca913040236ab2175f543cdafc498d002d169d26d630dad2cf472`
+
+バックエンド（Nz-Videomni）側の調査結果（詳細な経路は本リポジトリ外の計画書
+`gentle-crunching-ripple.md` §2-4に記録）: LTX 2.3エンジンは各テンソルの量子化
+タイプを1本ずつ読んで逆量子化しており、Q6_Kは参照GGUFの322行で既に融合カーネル経由で
+動いています。ブロックスワップ（推論中にGPUへ出し入れするブロック単位の重み
+バッファ）の転送バッファも、ジョブごとに実バイト数から動的に算出されます。その
+ため**バックエンド側の変更は不要**でした。唯一の副作用はUIの快適上限マーカーで、
+Q4_K_Mファイルを基準に較正されているため、Q6_K版では楽観的に表示される可能性が
+あります（LTX 2.5でQ6_Kのtransformerを使った実測では、除去段階の常駐VRAMピークが
+約1.03GiB増えました。§9-9）。
+
+### 9-2. pytest
+
+実行コマンド: `PYTHONPATH=src .venv\Scripts\python.exe -m pytest tests/`
+
+基準（着手前）284件 → 実装後296件。新規12件の内訳:
+
+| ファイル | 新規件数 |
+|---|---|
+| tests/test_typemap.py | 4 |
+| tests/test_convert.py | 5 |
+| tests/test_output_vs_reference.py | 3 |
+
+既存ファイルへの変更は`tests/test_ltx25.py`のテストダブル（模擬オブジェクト）を
+1行更新しただけで、既存テストの件数・内容は変わっていません。**実装後の296件
+すべてPASS。失敗・スキップともに0件で、既存284件の退行はありません。**
+
+### 9-3. 変換の実行
+
+実行コマンド（`run.bat convert`と等価）:
+
+```
+python -m converter convert --quant-type Q6_K --quant-workers 4 --out output/Sulphur-2-base-distil-Q6_K.gguf
+```
+
+実行時刻: 開始 2026-09-17 08:50:19、終了 09:28:25。所要38分06秒。終了コード0。
+進捗は最終的に4444/4444・1.95 tensor/sで完走しました。出力サイズ・SHA-256は
+§9-1のとおりです。ログ全文は`output\sulphur-convert-Q6_K.log`にあります
+（`tqdm`の進捗表示が復帰文字で同じ行を書き換えるため、以下は冒頭と末尾だけを
+抜粋します）。
+
+```
+start 2026-09-17 08:50:19
+cmd: python -m converter convert --quant-type Q6_K --quant-workers 4 --out output/Sulphur-2-base-distil-Q6_K.gguf (equivalent to run.bat convert ...)
+gguf: This GGUF file is for Little Endian only
+Writing the following files:
+output\Sulphur-2-base-distil-Q6_K.gguf: n_tensors = 4444, total_size = 21.0G
+Source : S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\safetensors\sulphur_distil_bf16.safetensors
+Typemap: S:\OriginalApps\12_Nz-LTX23-AviUtl2\Nz-GGUF-Converter-LTX23\typemap\ltx23_q4km_typemap.json
+Output : output\Sulphur-2-base-distil-Q6_K.gguf
+Skipping 1503 non-diffusion tensor(s) (e.g. audio_vae.decoder.conv_in.conv.bias, audio_vae.decoder.conv_in.conv.weight, audio_vae.decoder.conv_out.conv.bias, audio_vae.decoder.conv_out.conv.weight...)
+Converting: 100%|##########| 4444/4444 [38:04<00:00, 1.95tensor/s]
+Done: output\Sulphur-2-base-distil-Q6_K.gguf
+rc=0
+end 2026-09-17 09:28:25
+```
+
+変換の組み込み自己検証（`convert()`が書き込み直後に自動で行うもの）は、テンソル
+総数・`config`のKV・先頭と末尾それぞれ3本のテンソル（いずれもF32／BF16の行）だけを
+確認する設計です。4,444本全行の型が正しく書き換わったかどうかは、この自己検証
+では確認できません。次節のG3（`verify`）が確認しています。
+
+### 9-4. 構造検証
+
+#### G3（`run.bat verify --quant-type Q6_K --out output\Sulphur-2-base-distil-Q6_K.gguf`）
+
+```
+Output:    output\Sulphur-2-base-distil-Q6_K.gguf
+Reference: ..\Nz-Videomni\models\LTX23\Weights\LTX-2.3-22B-distilled-1.1-Q4_K_M.gguf
+Tensors:   output=4444 reference=4444
+
+[PASS] tensor_count
+[PASS] tensor_names_order
+[PASS] tensor_types_shapes
+[PASS] kv_keys
+[PASS] kv_types
+[PASS] kv_fixed_values
+[PASS] kv_config_json
+[PASS] general_alignment_absent
+[PASS] file_size_ratio
+[PASS] dequant_sanity
+
+RESULT: PASS
+```
+
+**10項目全てPASS。** `tensor_types_shapes`は参照GGUFのK量子化行をQ6_Kへ折り畳んで
+比較し、`file_size_ratio`は見込みサイズ（参照サイズにK量子化行の32バイト整列後の
+サイズ差を積み上げた値）に対する±1%で判定しています。両方とも折り畳み後の規則
+どおりに合格しました。
+
+#### G3′（対照実験・既存のQ4_K_M出力を`--quant-type Q6_K`で`verify`）
+
+検査が本物であることを確かめるための対照実験です。既存のQ4_K_M出力
+（`output\Sulphur-2-base-distil-Q4_K_M.gguf`）をQ6_K基準で検証すると、次の
+2項目だけが不合格になりました。
+
+```
+[FAIL (1310 issue(s))] tensor_types_shapes
+    - transformer_blocks.0.attn1.to_gate_logits.weight: tensor_type mismatch: output=Q5_K expected=Q6_K (reference=Q5_K)
+    - transformer_blocks.0.attn1.to_k.weight: tensor_type mismatch: output=Q5_K expected=Q6_K (reference=Q5_K)
+    （中略。1,310件はQ4_K 1,242本＋Q5_K 68本の合計）
+[FAIL (1 issue(s))] file_size_ratio
+    - file size differs by 15.44% (tolerance 1%): output=17763014976 bytes, projected=21006400160 bytes for all-Q6_K K-quant rows (reference=17763015328 bytes)
+```
+
+他の8項目（`tensor_count`・`tensor_names_order`・`kv_keys`・`kv_types`・
+`kv_fixed_values`・`kv_config_json`・`general_alignment_absent`・`dequant_sanity`）
+はPASSのままで、終了コードは1でした。`tensor_types_shapes`の不合格件数1,310は、
+Q4_K_M出力が実際に持つQ4_K 1,242本とQ5_K 68本の合計と一致します（Q6_K 322本は
+出力・参照とも元々Q6_Kなので不一致になりません）。引用中の見込みサイズが§9-1の
+実サイズと352バイト違うのは、この判定の分母が参照GGUFのサイズ（本書冒頭のとおり、
+出力より352バイト大きい）を基にしているためです。**折り畳んだ検査が弱まって
+いないことの裏づけです。**
+
+### 9-5. 数値比較（G4）
+
+方法: 型マップのK量子化行のうち、元がQ4_K だった行から均等間隔（typemap順で
+20行おき、先頭と末尾を含む）に64本、元がQ5_K だった行は68本全部を標本として
+選び、bf16の元値に対する相対RMSE（二乗平均平方根誤差を元の値の大きさで割った
+比率）を、Q4_K_M版・Q6_K版それぞれについて`gguf.quants.dequantize`で復元した値と
+比較して算出しました（float64で計算）。元がQ6_K だった322行と、F32／BF16の
+2,812行は、標本ではなく**全数**についてバイト一致を確認しました。CPUのみを
+使用し、元ファイルの`license`メタデータの値は（cp932で表せない文字を含むため）
+一切印字していません。比較に使ったスクリプトはこのタスク用の使い捨てで、
+オーナー裁定によりリポジトリには追跡していません（結果のJSONだけ
+`output\compare-sulphur-q4-q6.json`に残っています）。
+
+所要時間: 95.75秒。
+
+| 元の型 | 版 | 相対RMSE 最小 | 中央値 | 最大 | 標本数 |
+|---|---|---|---|---|---|
+| Q4_K | Q4_K_M版 | 0.06616 | 0.07460 | 0.08774 | 64 |
+| Q4_K | Q6_K版 | 0.01668 | 0.01873 | 0.02285 | 64 |
+| Q5_K | Q4_K_M版 | 0.03474 | 0.04041 | 0.05003 | 68 |
+| Q5_K | Q6_K版 | 0.01744 | 0.02043 | 0.02719 | 68 |
+
+**Q6_K版の相対RMSEは、132本全ての標本でQ4_K_M版より小さくなりました**
+（合格132／不合格0）。元がQ6_K だった322行は両版のペイロードが322/322本とも
+バイト一致、F32／BF16の2,812行も2,812/2,812本ともバイト一致でした（元がQ6_K の
+行は両版で同じ元値・同じカーネルを通るため、一致するのが当然の結果です）。
+
+### 9-6. E2E段階A
+
+方式は本ドキュメント4節と同一です（バックエンドの`.venv-engine`を間借りし、
+`loader_service`／`quant_service`の本番コードパスをCPU上で検証）。実行ログ全文は
+`output\sulphur-e2e-stageA-Q6_K.log`にあります（以下は(b)の進捗表示を省いた抜粋です）。
+
+```
+Output GGUF: output\Sulphur-2-base-distil-Q6_K.gguf
+[ram-probe] wmic query failed (non-fatal): FileNotFoundError(2, '指定されたファイルが見つかりません。', None, 2, None)
+Host RAM: could not be determined (wmic unavailable) -- streaming mode used anyway
+Backend modules imported OK: engine.gguf.loader_service, engine.gguf.quant_service
+
+=== (a) KV metadata / config check [backend path] ===
+OK: config JSON parsed, top-level keys: ['audio_vae', 'scheduler', 'transformer', 'vae', 'vocoder']
+(elapsed: 0.23s)
+
+=== Summary ===
+Mode                 : backend
+KV/config check      : PASS
+Tensors checked      : 4444
+Tensors OK           : 4444
+Tensors FAILED       : 0
+Elapsed              : 65.1s (1.1 min)
+Throughput           : 68.3 tensors/s
+
+RESULT: PASS
+```
+
+`wmic`が使えなかったため搭載RAM量は取得できませんでした（無害な警告。この方式は
+搭載RAM量に関わらず常に1テンソルずつストリーミングで検証する設計のため、動作には
+影響しません）。**4,444テンソル全件がバックエンドの実dequant関数でCPU上において
+例外なく成功し、NaN/Infも検出されませんでした。KVメタデータの`config`取得・
+パースも、バックエンドの本番コードパスで成功しました。**
+
+### 9-7. 配置
+
+`output\Sulphur-2-base-distil-Q6_K.gguf`を、同一NTFSボリューム内のハードリンクとして
+`Nz-Videomni\models\LTX23\Weights\Sulphur-2-base-distil-Q6_K.gguf`へ配置しました
+（21GBを二重に持たない、REDGraftの前例〔§8〕と同じ方式）。リンク数2・サイズは
+変換元と同一。Nz-Videomniの`git status`に差分はありません（`models\**\*.gguf`は
+`.gitignore`対象のため）。
+
+### 9-8. 実機ゲート（GPU）— 未実施
+
+本来この節で行うゲートは、Q6_K版transformerを読み込み、768×512・49フレーム・
+seedを固定した文章からの動画生成を1本、同条件でQ4_K_M版も1本生成して、読み込み
+時間・生成時間・VRAMピークを1変数比較として記録することでした（本リポジトリ外の
+計画書`gentle-crunching-ripple.md` §5 のG7）。
+
+**実施していません。** 着手前の確認（プリフライト）で、オーナー自身が起動した
+バックエンドが既にポート18620で稼働中であることが分かりました（2026-09-17
+00時47分から待受・GPUワーカープロセスが接続済み・デバイスメモリ使用量は
+約1,030MiBでモデルは常駐していないとみられる状態）。このゲートの規則は
+「オーナーが起動したバックエンドを流用・停止しない」ことなので、何も手を
+付けないままゲートを止めました。
+
+出力ファイルは§9-7のとおり既に配置済みなので、稼働中のバックエンドで
+`Sulphur-2-base-distil-Q6_K`を選んで読み込み、Q4_K_M版と直接見比べることは
+オーナー自身が今すぐ行えます。稼働中のバックエンドを止めてゲートを最初から
+やり直すか、オーナー自身のセッションで比較するかは、オーナー判断とします。
+
+### 9-9. 申し送り
+
+- **快適上限（`comfort_budgets`）のQ6_K向け再較正はしていません。** §9-1で
+  触れたとおり、Q6_K版を選んだときのUIの快適上限マーカーは楽観的になりうる
+  想定です。必要ならオーナー判断で別テーマとして起票してください。
+- **HFへの再ホストはしていません。** Q4_K_M版は`Rootport/Nz-Sulphur2`で公開済み
+  ですが、Q6_K版を配るかどうかはオーナー判断です。
+- **10Eros・公式LTX 2.3のQ6_K化はしていません。** 同じ手順で作れるようには
+  なっていますが、今回変換したのはSulphur-2-baseだけです。
